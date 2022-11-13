@@ -22,6 +22,8 @@ if __name__ == "__main__":
     )
     options = parser.parse_args()
 
+    exit(-1)
+
     build_caffe2(
         version=None,
         cmake_python_library=None,
