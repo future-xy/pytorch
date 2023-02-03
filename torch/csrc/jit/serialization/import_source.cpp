@@ -8,6 +8,7 @@
 #include <torch/custom_class.h>
 
 #include <regex>
+#include <chrono>
 
 namespace torch {
 namespace jit {
@@ -137,7 +138,9 @@ TypePtr SourceImporterImpl::findNamedType(const QualifiedName& name) {
   if (it != to_be_defined_.end() && it->second->kind() == TK_CLASS_DEF) {
     ClassDef cd(std::move(it->second));
     to_be_defined_.erase(it);
-    importNamedType(name.prefix(), cd);
+    importNamedType(name.prefix(), cd); // this will add the type to the CU,
+                                        // so we don't need to run this again
+                                        // for the same type (exactly the same)
   }
   return cu_->get_type(name);
 }
@@ -255,11 +258,88 @@ std::shared_ptr<SugaredValue> SourceImporterImpl::resolveValue(
   return nullptr;
 }
 
+// whitelist of types that we cache
+const std::string type_whitelist = "BertLayer";
+// blacklist of types that we don't cache
+const std::string type_blacklist = "___torch_mangle_419";
+
 TypePtr SourceImporterImpl::resolveType(
     const std::string& name,
     const SourceRange& loc) {
+  // check if we have already resolved this type
+  // NOTE: we only cache types that are in the '__torch__' namespace
+  // NOTE2: currently we only cache types in whitelist
+  if (name.substr(0, 9) == "__torch__" &&
+      // name.find(type_whitelist) != std::string::npos &&
+      name.find(type_blacklist) == std::string::npos &&
+      name.find("___torch_mangle_425") == std::string::npos &&
+      name.find("___torch_mangle_420") == std::string::npos) {
+    std::string cached_name = name;
+    // process name to remove mangled name,
+    // e.g., '__torch__.transformers.models.bert.modeling_bert.___torch_mangle_29.BertLayer' ->
+    // '__torch__.transformers.models.bert.modeling_bert.BertLayer'
+    if (name.find("___torch_mangle_") != std::string::npos) {
+      std::string prefix = name.substr(0, name.find("___torch_mangle_"));
+      std::string suffix = name.substr(name.find("___torch_mangle_"));
+      std::string mangled_name = suffix.substr(suffix.find(".") + 1);
+      cached_name = prefix + mangled_name;
+    }
+    // std::cout << "convert type " << name << " to " << cached_name << std::endl;
+    auto it = resolved_types_.find(cached_name);
+    if (it != resolved_types_.end()) {
+      // std::cout << "found type " << cached_name << " in cache" << std::endl;
+      return type_buffer_[it->second];
+      // dry run
+      // return findNamedType(QualifiedName(name));
+    } else {
+      auto result = findNamedType(QualifiedName(name));
+      if (result) {
+        // std::cout << "cache type " << cached_name << std::endl;
+        type_buffer_.push_back(result);
+        resolved_types_[cached_name] = type_buffer_.size() - 1;
+      }
+      return result;
+    }
+  }
   return findNamedType(QualifiedName(name));
 }
+
+// TypePtr SourceImporterImpl::resolveType_BK(
+//     const std::string& name,
+//     const SourceRange& loc) {
+//   // // check if we have already resolved this type
+//   // // NOTE: we only cache types that are in the '__torch__' namespace
+//   // // NOTE2: currently we only cache types in whitelist: BertLayer,
+//   // //        e.g., '__torch__.transformers.models.bert.modeling_bert.BertLayer'
+//   // if (name.substr(0, 9) == "__torch__" &&
+//   //     name.find("BertLayer") != std::string::npos) {
+//   //   std::string cached_name = name;
+//   //   // process name to remove mangled name,
+//   //   // e.g., '__torch__.transformers.models.bert.modeling_bert.___torch_mangle_29.BertLayer' ->
+//   //   // '__torch__.transformers.models.bert.modeling_bert.BertLayer'
+//   //   if (name.find("___torch_mangle_") != std::string::npos) {
+//   //     std::string prefix = name.substr(0, name.find("___torch_mangle_"));
+//   //     std::string suffix = name.substr(name.find("___torch_mangle_"));
+//   //     std::string mangled_name = suffix.substr(suffix.find(".") + 1);
+//   //     cached_name = prefix + mangled_name;
+//   //   }
+//   //   std::cout << "convert type " << name << " to " << cached_name << std::endl;
+//   //   auto it = resolved_type_ptrs_.find(cached_name);
+//   //   if (it != resolved_type_ptrs_.end()) {
+//   //     std::cout << "found type " << cached_name << " in cache" << std::endl;
+//   //     return it->second;
+//   //     // dry run
+//   //     // return findNamedType(QualifiedName(name));
+//   //   } else {
+//   //     auto result = findNamedType(QualifiedName(name));
+//   //     if (result) {
+//   //       resolved_type_ptrs_[cached_name] = result;
+//   //     }
+//   //     return result;
+//   //   }
+//   // }
+//   return findNamedType(QualifiedName(name));
+// }
 
 void SourceImporterImpl::importFunction(
     const std::string& qualifier,
@@ -375,6 +455,7 @@ void SourceImporterImpl::importClass(
     const QualifiedName& qualified_classname,
     const ClassDef& class_def,
     bool is_module) {
+  // std::cout << "importing class " << qualified_classname.qualifiedName() << std::endl;
   // BC for TorchBind classes
   //
   // Previously we would serialize TorchBind classes as actual

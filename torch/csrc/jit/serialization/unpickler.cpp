@@ -197,6 +197,11 @@ IValue Unpickler::parse_ivalue() {
   return stack_[0];
 }
 
+IValue Unpickler::parse_ivalue(const void* tensor_pool) {
+  tensor_pool_ = tensor_pool;
+  return parse_ivalue();
+}
+
 double Unpickler::readFloat() {
   AT_ASSERT(sizeof(double) == 8);
   double big_endian = read<double>();
@@ -230,6 +235,10 @@ void Unpickler::run() {
   while (true) {
     PickleOpCode opcode = readInstruction();
     if (opcode == PickleOpCode::STOP) {
+      // std::cout << "time spent on read global:" << time_spent_in_read_record_.count() << std::endl;
+      // for (auto& item : time_spent_in_read_record_per_module_) {
+      //   std::cout << item.first << " " << item.second.count() << std::endl;
+      // }
       return;
     }
   }
@@ -473,10 +482,27 @@ PickleOpCode Unpickler::readInstruction() {
 
         at::DataPtr storage_ptr;
         if (numel > 0) {
-          // If there are no elements in the tensor, there's no point in
-          // reading a zero (0) byte file from the input stream and paying
-          // that cost.
-          storage_ptr = read_record_(key);
+          if (tensor_pool_ != nullptr) {
+            auto offset_dptr = read_record_(key);
+            uint64_t* offset_ptr = static_cast<uint64_t*>(offset_dptr.get());
+            uint64_t offset = *offset_ptr;
+            // std::cout << "offset_ptr: " << std::hex << offset_ptr << " offset: " << std::dec << offset << std::endl;
+            // make a DataPtr from the tensor pool, data is in tensor_pool_ + offset
+            storage_ptr = at::DataPtr(
+                (void*) tensor_pool_ + offset,
+                device_.value());
+            // print address in 0x format
+            // std::cout << "deserializing tensor " << key
+            //           << " from tensor pool 0x" << std::hex
+            //           << (uint64_t)tensor_pool_ << " at address 0x" << std::hex
+            //           << (uint64_t)storage_ptr.get() << " offset "
+            //           << offset << std::endl;
+          } else {
+            // If there are no elements in the tensor, there's no point in
+            // reading a zero (0) byte file from the input stream and paying
+            // that cost.
+            storage_ptr = read_record_(key);
+          }
         }
 
         storage = at::Storage(
@@ -489,9 +515,16 @@ PickleOpCode Unpickler::readInstruction() {
         if (storage_context_ != nullptr) {
           storage_context_->addStorage(key, storage);
         }
+        // print tensor type, key, device, and numel
+        // std::cout << "Loading tensor of type " << dtype.name()
+        //           << " from key " << key << " on device " << device
+        //           << " with numel " << numel << std::endl;
       }
 
       auto options = at::CPU(type).options();
+      if (tensor_pool_ != nullptr) {
+        options = at::CUDA(type).options();
+      }
       if (use_storage_device_) {
         options = options.device(storage.device());
         device = storage.device();
@@ -506,6 +539,7 @@ PickleOpCode Unpickler::readInstruction() {
       }
 
       if (device.is_cuda() || device.is_xpu() || device.is_meta()) {
+        // std::this_thread::sleep_for(std::chrono::milliseconds(1));
         tensor = tensor.to(device, tensor.scalar_type());
       } else if (device.type() != DeviceType::CPU) {
         AT_ERROR(
@@ -528,6 +562,7 @@ PickleOpCode Unpickler::readInstruction() {
 void Unpickler::readGlobal(
     const std::string& module_name,
     const std::string& class_name) {
+  auto start = std::chrono::high_resolution_clock::now();
   // TODO [unpickler refactor] __main__ isn't used by the pickler anymore, this
   // is only here for bc-compatibility reasons
   if (module_name == "__main__") {
@@ -535,9 +570,9 @@ void Unpickler::readGlobal(
       globals_.emplace_back([this] {
         auto setitem_data = stack_.back();
         stack_.pop_back();
-        TORCH_INTERNAL_ASSERT(
-            !tensor_table_.empty(),
-            "Pickler tried to write a tensor but had no tensor table to write to");
+        TORCH_INTERNAL_ASSERT(!tensor_table_.empty(),
+                              "Pickler tried to write a tensor but had no "
+                              "tensor table to write to");
         stack_.emplace_back(tensor_table_.at(setitem_data.toInt()));
       });
     } else if (class_name == "IntList") {
@@ -553,10 +588,9 @@ void Unpickler::readGlobal(
         // Pop reduce arg off the stack
         auto data = stack_.back().toTupleRef().elements().at(0);
         stack_.pop_back();
-        TORCH_CHECK(
-            !tensor_table_.empty(),
-            "Found a tensor table reference but Unpickler"
-            " has no tensor table\n");
+        TORCH_CHECK(!tensor_table_.empty(),
+                    "Found a tensor table reference but Unpickler"
+                    " has no tensor table\n");
         stack_.emplace_back(tensor_table_.at(data.toInt()));
       });
     } else if (class_name == "restore_type_tag") {
@@ -606,15 +640,14 @@ void Unpickler::readGlobal(
         stack_.emplace_back(std::move(data));
       });
     }
-  } else if (
-      module_name == "torch._utils" &&
-      (class_name == "_rebuild_tensor_v2" ||
-       class_name == "_rebuild_qtensor")) {
+  } else if (module_name == "torch._utils" &&
+             (class_name == "_rebuild_tensor_v2" ||
+              class_name == "_rebuild_qtensor")) {
     // Unpickle a tensor
     bool quantized = class_name == "_rebuild_qtensor";
     rebuildTensor(quantized);
-  } else if (
-      module_name == "torch._utils" && class_name == "_rebuild_sparse_tensor") {
+  } else if (module_name == "torch._utils" &&
+             class_name == "_rebuild_sparse_tensor") {
     rebuildSparseTensor();
   } else if (module_name == "builtins" && class_name == "complex") {
     globals_.emplace_back([this] {
@@ -679,15 +712,38 @@ void Unpickler::readGlobal(
       stack_.emplace_back(int64_t(*qscheme));
       return;
     }
-    TORCH_CHECK(
-        false,
-        "Unpickler found unknown torch global, 'torch.",
-        class_name,
-        "'");
+    TORCH_CHECK(false, "Unpickler found unknown torch global, 'torch.",
+                class_name, "'");
   } else {
     AT_ASSERT(type_resolver_);
+    // std::cout << "module_name: " << module_name << " class_name: " << class_name << std::endl;
+    // auto t0 = std::chrono::high_resolution_clock::now();
+    // auto qn = c10::QualifiedName(module_name, class_name);
+    // auto t1 = std::chrono::high_resolution_clock::now();
+    // std::this_thread::sleep_for(std::chrono::microseconds(1));
+    // bool measure = false;
+    // if (module_name == "__torch__.transformers.models.bert.modeling_bert" &&
+    //     class_name == "BertForSequenceClassification") {
+    //   measure = true;
+    // }
+    // std::cout << "type_resolver_ time: " <<
+    // std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() <<
+    // std::endl;
+    // if (measure) {
+    //   std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    //   std::cout << "measuring" << std::endl;
+    // }
     at::StrongTypePtr type =
         type_resolver_(c10::QualifiedName(module_name, class_name));
+    // if (measure) {
+    //   std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    //   std::cout << "measured" << std::endl;
+    // }
+    // std::this_thread::sleep_for(std::chrono::microseconds(2));
+    // auto t2 = std::chrono::high_resolution_clock::now();
+    // if (module_name == "__torch__.transformers.models.bert.modeling_bert" && class_name == "BertForSequenceClassification") {
+    //   std::cout << "type_resolver_: " << std::endl;
+    // }
     if (auto enum_type = type.type_->cast<c10::EnumType>()) {
       globals_.emplace_back([this, enum_type] {
         auto val = stack_.back();
@@ -710,8 +766,17 @@ void Unpickler::readGlobal(
         stack_.emplace_back(std::move(obj));
       });
     }
+    // auto t3 = std::chrono::high_resolution_clock::now();
+    // std::cout << "type_resolver_: " << std::chrono::duration_cast<std::chrono::microseconds>(t2 - t1).count() << " obj_loader_: " << std::chrono::duration_cast<std::chrono::microseconds>(t3 - t2).count() << std::endl;
   }
   stack_.emplace_back(int64_t(globals_.size() - 1));
+  // auto end = std::chrono::high_resolution_clock::now();
+  // auto duration =
+  //     std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+  // time_spent_in_read_record_ += duration;
+  // time_spent_in_read_record_per_module_[module_name] += duration;
+  // std::cout << duration.count() << "us spent in read_record for module "
+  //           << module_name << " and class " << class_name << std::endl;
 }
 
 void Unpickler::rebuildSparseTensor() {

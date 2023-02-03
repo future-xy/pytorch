@@ -54,6 +54,63 @@ IValue readArchiveAndTensors(
   return unpickler.parse_ivalue();
 }
 
+IValue readArchiveAndTensorRef(
+    const std::string& archive_name,
+    const std::string& pickle_prefix,
+    const std::string& tensor_prefix,
+    c10::optional<TypeResolver> type_resolver,
+    c10::optional<ObjLoader> obj_loader,
+    c10::optional<at::Device> device,
+    const void* tensor_pool,
+    caffe2::serialize::PyTorchStreamReader& stream_reader,
+    c10::TypePtr (*type_parser)(const std::string&),
+    std::shared_ptr<DeserializationStorageContext> storage_context) {
+  std::string picklename = pickle_prefix + archive_name + ".pkl";
+  at::DataPtr pickle_ptr;
+  size_t pickle_size = 0;
+  std::tie(pickle_ptr, pickle_size) = stream_reader.getRecord(picklename);
+
+  size_t bytes_read = 0;
+  auto data = reinterpret_cast<const char*>(pickle_ptr.get());
+  auto reader = [&](char* buffer, size_t len) -> size_t {
+    if (bytes_read >= pickle_size) {
+      return 0;
+    }
+    len = std::min(pickle_size - bytes_read, len);
+    // Copy len bytes into buffer
+    const char* start = data + bytes_read;
+    std::memcpy(buffer, start, len);
+    bytes_read += len;
+    return len;
+  };
+
+  std::string tensor_dir_path =
+      (tensor_prefix.compare("") != 0) ? tensor_prefix : archive_name + "/";
+
+  auto read_record = [&](const std::string& name) {
+    std::string ss = tensor_dir_path + name;
+    return std::get<0>(stream_reader.getRecord(ss));
+  };
+
+  // std::cout << "Picklename: " << picklename << std::endl;
+  // std::cout << "Tensor dir path: " << tensor_dir_path << std::endl;
+
+  Unpickler unpickler(
+      reader,
+      type_resolver ? std::move(*type_resolver) : nullptr,
+      obj_loader ? std::move(*obj_loader) : nullptr,
+      std::move(read_record),
+      device,
+      false,
+      type_parser,
+      storage_context);
+  unpickler.set_version(stream_reader.version());
+  // auto ivalues = unpickler.parse_ivalue();
+  // std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  // return ivalues;
+  return unpickler.parse_ivalue(tensor_pool);
+}
+
 bool check_zip_file(
     std::shared_ptr<caffe2::serialize::ReadAdapterInterface> rai) {
   std::array<uint8_t, 2> first_short{};

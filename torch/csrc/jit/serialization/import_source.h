@@ -71,6 +71,9 @@ struct SourceImporterImpl : public Resolver,
   // named types and functions loaded from a file but not yet defined because
   // their type has not been requested yet.
   std::unordered_map<QualifiedName, TreeRef> to_be_defined_;
+  // typePtr buffer for modules
+  std::unordered_map<std::string, size_t> resolved_types_;
+  std::vector<TypePtr> type_buffer_;
 };
 
 // Given a directory of serialized TorchScript sources,

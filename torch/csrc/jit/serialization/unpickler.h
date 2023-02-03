@@ -7,6 +7,9 @@
 #include <torch/csrc/jit/frontend/script_type_parser.h>
 #include <torch/csrc/jit/serialization/pickler.h>
 
+#include <chrono>
+#include <unordered_map>
+
 namespace torch {
 namespace jit {
 
@@ -42,6 +45,7 @@ class TORCH_API Unpickler {
       : reader_(std::move(reader)),
         tensor_table_(tensor_table),
         type_resolver_(std::move(type_resolver)),
+        tensor_pool_(nullptr),
         use_storage_device_(false),
         type_parser_(type_parser),
         version_(caffe2::serialize::kProducedFileFormatVersion) {}
@@ -65,6 +69,7 @@ class TORCH_API Unpickler {
         read_record_(std::move(read_record)),
         // NOLINTNEXTLINE(performance-move-const-arg)
         device_(std::move(device)),
+        tensor_pool_(nullptr),
         use_storage_device_(use_storage_device),
         type_parser_(type_parser),
         storage_context_(std::move(storage_context)),
@@ -77,6 +82,8 @@ class TORCH_API Unpickler {
   // If you know the type of the ivalue, tags can be restored with
   // restoreAccurateTypeTags
   IValue parse_ivalue();
+
+  IValue parse_ivalue(const void* tensor_pool);
 
   // [type tag serialization]
   // This is used to determine whether to restore type tags be recursively
@@ -163,6 +170,13 @@ class TORCH_API Unpickler {
 
   std::function<at::DataPtr(const std::string&)> read_record_;
   c10::optional<at::Device> device_;
+  const void* tensor_pool_;
+  // milliseconds int
+  std::chrono::duration<double, std::micro> time_spent_in_read_record_{0};
+  std::unordered_map<std::string, std::chrono::duration<double, std::micro>>
+      time_spent_in_read_record_per_module_;
+  // a time counter to track the time spent in the unpickler
+
   // When set to true, Unpickler will ignore the pickled device and use the
   // device of the DataPtr returned by the read_record_ function. The default
   // value of this flag is false.

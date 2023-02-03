@@ -68,15 +68,51 @@ TORCH_API void check_onnx_proto(
     const std::string& proto_string,
     bool full_check = false);
 
+// A write buffer that writes to a file (4k aligned).
+class AlignedBuffer {
+    public:
+    explicit AlignedBuffer(const std::string& filename, size_t size);
+    ~AlignedBuffer();
+
+    size_t writeData(const void* data, size_t size);
+    size_t writePadding(size_t padding_size);
+
+    private:
+    int fd_;
+    size_t buf_size_;
+    size_t buf_pos_;
+    size_t file_offset_;
+    void* buffer_;
+};
+
+// A tensor writer that writes the raw tensor data to a file in raw binary.
+class TORCH_API TensorWriter final {
+ public:
+  explicit TensorWriter(const std::string& filename);
+  ~TensorWriter();
+
+  uint64_t writeRecord(const char* data, size_t size);
+
+ private:
+  size_t offset_;
+  AlignedBuffer buffer_;
+}; 
+
 // Serializer for both oldsyle and unified format TorchScript serialization
 class TORCH_API ScriptModuleSerializer {
  public:
   explicit ScriptModuleSerializer(
-      caffe2::serialize::PyTorchStreamWriter& export_writer)
-      : writer_(export_writer), current_source_range_tag_(0) {}
+      caffe2::serialize::PyTorchStreamWriter& export_writer,
+      TensorWriter* tensor_writer = nullptr)
+      : writer_(export_writer), p_tensor_writer_(tensor_writer), current_source_range_tag_(0) {}
 
   void writeFiles(const std::string& code_dir);
   void serialize(
+      const Module& module,
+      const ExtraFilesMap& extra_files,
+      bool bytecode_format,
+      bool save_mobile_debug_info);
+  void serializeConvertedModule(
       const Module& module,
       const ExtraFilesMap& extra_files,
       bool bytecode_format,
@@ -97,10 +133,18 @@ class TORCH_API ScriptModuleSerializer {
       const std::string& archive_dir,
       const std::string& tensor_dir,
       bool use_storage_context = false);
+  void writeArchiveAndExportTensor(
+      const IValue& value,
+      const std::string& archive_name,
+      const std::string& archive_dir,
+      const std::string& tensor_dir,
+      bool use_storage_context = false);
   void updateSourceRangeTags(const SourceRangeRecords& ranges);
 
   caffe2::serialize::PyTorchStreamWriter& writer_;
   std::vector<at::IValue> constant_table_;
+
+  TensorWriter* p_tensor_writer_;
 
   std::unordered_set<c10::NamedTypePtr> converted_types_;
   PrintDepsTable class_deps_;
@@ -173,6 +217,14 @@ TORCH_API void ExportModule(
 TORCH_API void ExportModule(
     const Module& module,
     const std::function<size_t(const void*, size_t)>& writer_func,
+    const ExtraFilesMap& metadata = ExtraFilesMap(),
+    bool bytecode_format = false,
+    bool save_mobile_debug_info = false,
+    bool use_flatbuffer = false);
+
+TORCH_API void ConvertModule(
+    const Module& module,
+    const std::string& filename,
     const ExtraFilesMap& metadata = ExtraFilesMap(),
     bool bytecode_format = false,
     bool save_mobile_debug_info = false,

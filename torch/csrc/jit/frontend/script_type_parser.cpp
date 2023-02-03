@@ -225,16 +225,26 @@ TypePtr ScriptTypeParser::parseTypeFromExpr(const Expr& expr) const {
   // the resolver needs to recursively resolve the expression, so to avoid
   // resolving all type expr subtrees we only use it for the top level
   // expression and base type names.
+  // TODO: which is using? resolver_ or parseTypeFromExprImpl?
   if (resolver_) {
+    // auto start = std::chrono::high_resolution_clock::now();
+    // std::cout << "parseTypeFromExpr: resolving " << expr.range().text().str() << std::endl;
     if (auto typePtr =
             resolver_->resolveType(expr.range().text().str(), expr.range())) {
+      // std::cout << "parseTypeFromExpr: resolved " << expr.range().text().str() << std::endl;
+      // auto end = std::chrono::high_resolution_clock::now();
+      // auto dur = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+      // std::cout << "parseTypeFromExpr: resolved " << expr.range().text().str() << " in " << dur.count() << "us" << std::endl;
       return typePtr;
-    }
+    } /*else {
+      std::cout << "parseTypeFromExpr: failed to resolve " << expr.range().text().str() << std::endl;
+    }*/
   }
   return parseTypeFromExprImpl(expr);
 }
 
 TypePtr ScriptTypeParser::parseTypeFromExprImpl(const Expr& expr) const {
+  // auto start = std::chrono::high_resolution_clock::now();
   if (expr.kind() == TK_SUBSCRIPT) {
     auto subscript = Subscript(expr);
     auto value_name = parseBaseTypeName(subscript.value());
@@ -242,10 +252,17 @@ TypePtr ScriptTypeParser::parseTypeFromExprImpl(const Expr& expr) const {
       throw ErrorReport(subscript.value().range())
           << "Subscripted type must be a type identifier";
     }
-    return subscriptToType(*value_name, subscript);
+    auto res= subscriptToType(*value_name, subscript);
+    // auto end = std::chrono::high_resolution_clock::now();
+    // auto dur = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+    // std::cout << "subscriptToType took " << dur.count() << "us" << std::endl;
+    return res;
+    // return subscriptToType(*value_name, subscript);
 
   } else if (expr.kind() == TK_STRINGLITERAL) {
+    // std::cout << "parseTypeFromExprImpl: TK_STRINGLITERAL" << std::endl;
     const auto& type_name = StringLiteral(expr).text();
+    // std::cout << "type_name: " << type_name << std::endl;
 
     // Check if the type is a custom class. This is done by checking
     // if type_name starts with "torch.classes."
@@ -278,11 +295,17 @@ TypePtr ScriptTypeParser::parseTypeFromExprImpl(const Expr& expr) const {
 
     throw ErrorReport(expr) << "Unknown type name '" << type_name << "'";
   } else if (auto name = parseBaseTypeName(expr)) {
+    // std::cout << "parseTypeFromExprImpl: parseBaseTypeName: " << *name << std::endl;
     auto itr = string_to_type_lut().find(*name);
     if (itr != string_to_type_lut().end()) {
+      // std::cout << "parseTypeFromExprImpl: found in string_to_type_lut" << std::endl;
+      // auto end = std::chrono::high_resolution_clock::now();
+      // auto dur = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+      // std::cout << "string_to_type_lut took " << dur.count() << "us" << std::endl;
       return itr->second;
     }
     if (resolver_) {
+      // std::cout << "parseTypeFromExprImpl: resolver_ is not null" << std::endl;
       if (auto typePtr = resolver_->resolveType(*name, expr.range())) {
         return typePtr;
       }
@@ -300,6 +323,7 @@ TypePtr ScriptTypeParser::parseTypeFromExprImpl(const Expr& expr) const {
 }
 
 TypePtr ScriptTypeParser::parseType(const std::string& str) {
+  // std::cout << "parseType: " << str << std::endl;
   Parser p(std::make_shared<Source>(str));
   return parseTypeFromExpr(p.parseExp());
 }
@@ -402,6 +426,7 @@ std::vector<Argument> ScriptTypeParser::parseArgsFromDecl(
         type = maybe_broad_list->first;
         N = maybe_broad_list->second;
       } else {
+        // std::cout << "parseArgsFromDecl"<< std::endl;
         type = parseTypeFromExpr(decl_arg.type().get());
       }
     }
@@ -435,6 +460,7 @@ std::vector<Argument> ScriptTypeParser::parseReturnFromDecl(const Decl& decl) {
 
   TypePtr parsed_type;
   Expr type_expr = decl.return_type().get();
+  // std::cout << "parseReturnFromDecl" << std::endl;
   parsed_type = parseTypeFromExpr(type_expr);
   return {Argument(
       "",

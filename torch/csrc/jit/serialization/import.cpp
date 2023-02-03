@@ -36,6 +36,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <chrono>
 
 namespace torch {
 namespace jit {
@@ -44,6 +45,10 @@ using caffe2::serialize::FileAdapter;
 using caffe2::serialize::IStreamAdapter;
 using caffe2::serialize::PyTorchStreamReader;
 using caffe2::serialize::ReadAdapterInterface;
+
+void dlog(const std::string& msg) {
+  std::cout << msg << std::endl;
+}
 
 void postSetStateValidate(const IValue& v) {
   auto obj = v.toObject();
@@ -120,9 +125,14 @@ class ScriptModuleDeserializer final {
       c10::optional<at::Device> device,
       ExtraFilesMap& extra_files);
 
+  Module fastDeserialize(
+      c10::optional<at::Device> device,
+      const void* tensor_pool,
+      ExtraFilesMap& extra_files);
+
  private:
   IValue readArchive(const std::string& archive_name);
-
+  IValue readArchiveFast(const std::string& archive_name, const void* tensor_pool);
   std::shared_ptr<CompilationUnit> compilation_unit_;
   std::shared_ptr<PyTorchStreamReader> reader_;
   std::shared_ptr<DeserializationStorageContext> storage_context_;
@@ -136,6 +146,7 @@ class ScriptModuleDeserializer final {
 
 IValue ScriptModuleDeserializer::readArchive(const std::string& archive_name) {
   auto type_resolver = [&](const c10::QualifiedName& qn) {
+
     auto cls = source_importer_.loadType(qn);
     return c10::StrongTypePtr(compilation_unit_, std::move(cls));
   };
@@ -181,6 +192,63 @@ IValue ScriptModuleDeserializer::readArchive(const std::string& archive_name) {
       type_resolver,
       obj_loader,
       device_,
+      *reader_.get(),
+      nullptr,
+      storage_context_);
+}
+
+IValue ScriptModuleDeserializer::readArchiveFast(const std::string& archive_name, const void* tensor_pool) {
+  auto type_resolver = [&](const c10::QualifiedName& qn) {
+    // auto start = std::chrono::high_resolution_clock::now();
+    auto cls = source_importer_.loadType(qn);
+    // auto end = std::chrono::high_resolution_clock::now();
+    // auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+    // std::cout << "type resolver takes " << duration.count() << " microseconds" << std::endl;
+    return c10::StrongTypePtr(compilation_unit_, std::move(cls));
+  };
+
+  // Decouple how to get obj from type. In this file it's dependent on
+  // Method.run() and graph executor, etc.
+  // For bytecode import we need to decouple these dependencies.
+  auto obj_loader = [&](const at::StrongTypePtr& type, IValue input) {
+    auto cls = type.type_->expect<at::ClassType>();
+    auto qn = cls->name();
+    size_t n = cls->numAttributes();
+    if (checkHasValidSetGetState(cls)) {
+      auto obj = c10::ivalue::Object::create(type, n);
+      // XXX: Do not optimize __setstate__, so that we don't try to
+      // specialize the class before it is initialized.
+      GraphOptimizerEnabledGuard guard(false);
+      Function& set_state = cls->getMethod("__setstate__");
+      // since we are in the middle of unpickling we might still have lists and
+      // dicts that do not have accurate tags (e.g. they report they are
+      // List[Any]). But we need to run __setstate__ which will check the input
+      // type and may access the tags. Since setstate has a known input type, we
+      // can correctly restore the tags now by apply the input type of set_state
+      // to the state object being passed.
+      // TODO: Remove once [serialization type tags] is landed
+      restoreAccurateTypeTags(
+          input, set_state.getSchema().arguments().at(1).type());
+      set_state({obj, input});
+      postSetStateValidate(obj);
+      return obj;
+    } else {
+      auto dict = std::move(input).toGenericDict();
+      auto obj = c10::ivalue::Object::create(type, n);
+      for (const auto i : c10::irange(n)) {
+        obj->setSlot(i, dict.at(cls->getAttributeName(i)));
+      }
+      return obj;
+    }
+  };
+  return readArchiveAndTensorRef(
+      /*archive_name=*/archive_name,
+      /*pickle_prefix=*/pickle_dir_prefix_,
+      /*tensor_prefix=*/tensor_dir_prefix_,
+      type_resolver,
+      obj_loader,
+      device_,
+      tensor_pool,
       *reader_.get(),
       nullptr,
       storage_context_);
@@ -278,6 +346,50 @@ Module ScriptModuleDeserializer::deserialize(
     constants_table_.push_back(constant.toIValue());
   }
   auto m = Module(readArchive("data").toObject());
+  rewriteQuantizedConvForBC(m);
+  return m;
+}
+
+Module ScriptModuleDeserializer::fastDeserialize(
+    c10::optional<at::Device> device,
+    const void* tensor_pool,
+    ExtraFilesMap& extra_files) {
+  // we populate the upgraders map before any load starts
+#if ENABLE_UPGRADERS
+  populate_upgraders_graph_map();
+#endif
+  C10_LOG_API_USAGE_ONCE("torch.script.fastLoad");
+
+  device_ = device;
+  // Load extra files.
+  for (const auto& kv : extra_files) {
+    const std::string& key = "extra/" + kv.first;
+    if (reader_->hasRecord(key)) {
+      at::DataPtr meta_ptr;
+      // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+      size_t meta_size;
+      std::tie(meta_ptr, meta_size) = reader_->getRecord(key);
+      extra_files[kv.first] =
+          std::string(static_cast<char*>(meta_ptr.get()), meta_size);
+    }
+  }
+  if (reader_->hasRecord("model.json") && code_prefix_.compare("code/") == 0) {
+#if !defined(C10_MOBILE) && !defined(C10_DISABLE_LEGACY_IMPORT)
+    return torch::jit::LEGACY_deserialize(compilation_unit_, reader_, device_);
+#else
+    AT_ERROR("Legacy model format is not supported on mobile.");
+#endif
+  }
+  // dlog("Loading constants from archive.");
+  auto tuple = readArchiveFast("constants", tensor_pool).toTuple();
+  // dlog(
+  //     "Constant size=" +
+  //     c10::to_string(tuple->elements().size()));
+  for (auto constant : tuple->elements()) {
+    constants_table_.push_back(constant.toIValue());
+  }
+  // dlog("Loading objects from archive");
+  auto m = Module(readArchiveFast("data", tensor_pool).toObject());
   rewriteQuantizedConvForBC(m);
   return m;
 }
@@ -476,6 +588,62 @@ Module load(
 
   ScriptModuleDeserializer deserializer(std::move(cu), std::move(reader));
   return deserializer.deserialize(device, extra_files);
+}
+
+Module fastLoad(const std::string& meta_filename, c10::optional<at::Device> device, const void* tensor_pool) {
+  ExtraFilesMap extra_files;
+  return fastLoad(meta_filename, device,tensor_pool, extra_files);
+}
+
+Module fastLoad(
+    const std::string& meta_filename,
+    c10::optional<at::Device> device,
+    const void* tensor_pool,
+    ExtraFilesMap& extra_files) {
+  auto format = getFileFormat(meta_filename);
+  switch (format) {
+    case FileFormat::FlatbufferFileFormat: {
+      std::cout << "Loading Flatbuffer file format\n";
+// #if defined(ENABLE_FLATBUFFER)
+//       return load_jit_module_from_file(filename, extra_files, device);
+// #else
+      TORCH_CHECK(
+          false, "Flatbuffer input file but the build hasn't enable flatbuffer")
+// #endif
+
+      case FileFormat::ZipFileFormat: {
+        // std::cout << "Loading Zip file format\n";
+        std::unique_ptr<FileAdapter> rai =
+            std::make_unique<FileAdapter>(meta_filename);
+        auto module = fastLoad(std::move(rai), device,tensor_pool, extra_files);
+        return module;
+      }
+
+      default:
+        TORCH_CHECK(false, "Unrecognized data format");
+    }
+  }
+}
+
+Module fastLoad(
+    std::shared_ptr<ReadAdapterInterface> rai,
+    c10::optional<c10::Device> device,
+    const void* tensor_pool,
+    ExtraFilesMap& extra_files) {
+  // Verify that we're loading a zip archive and not a torch.save pickle
+  // archive (marked by the 0x80 0x02 bytes at the start)
+  // NOLINTNEXTLINE(modernize-avoid-c-arrays,cppcoreguidelines-avoid-c-arrays)
+  TORCH_CHECK(
+      check_zip_file(rai),
+      "`torch::jit::load()` received a file from `torch.save()`, "
+      "but `torch::jit::load()` can only load files"
+      " produced by `torch.jit.save()`");
+
+  auto reader = std::make_shared<PyTorchStreamReader>(std::move(rai));
+  auto cu = std::make_shared<CompilationUnit>();
+
+  ScriptModuleDeserializer deserializer(std::move(cu), std::move(reader));
+  return deserializer.fastDeserialize(device, tensor_pool, extra_files);
 }
 
 // Replace object with a newly created but equivalent object.

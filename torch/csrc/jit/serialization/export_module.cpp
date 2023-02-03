@@ -39,6 +39,11 @@
 #include <unordered_set>
 #include <vector>
 
+#include <sys/stat.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+
 namespace torch {
 namespace jit {
 
@@ -477,6 +482,100 @@ void SetExportModuleExtraFilesHook(ExportModuleExtraFilesHook hook) {
   GetExtraFilesHook() = std::move(hook);
 }
 
+AlignedBuffer::AlignedBuffer(const std::string& filename, size_t size)
+    : fd_(-1), buf_size_(size), buf_pos_(0), file_offset_(0) {
+  fd_ = open(filename.c_str(), O_WRONLY | O_CREAT | O_DIRECT, 0644);
+  CAFFE_ENFORCE(fd_ >= 0, "Failed to open file ", filename);
+  buffer_ = aligned_alloc(4096, size);
+}
+
+AlignedBuffer::~AlignedBuffer() {
+  // if the buffer is not written to file, write it to file
+  if (buffer_ && buf_pos_) {
+    // align to 4k
+    size_t aligned_size = buf_pos_ + (4096 - buf_pos_ % 4096);
+    pwrite(fd_, buffer_, aligned_size, file_offset_);
+    file_offset_ += aligned_size;
+  }
+  if (buffer_) {
+    free(buffer_);
+  }
+  if (fd_ >= 0) {
+    close(fd_);
+  }
+}
+
+size_t AlignedBuffer::writeData(const void* data, size_t size) {
+  size_t written = 0;
+  while (written < size) {
+    // if data size is larger than buffer size and buffer is empty
+    // write data directly to file
+    if (size - written > buf_size_ && buf_pos_ == 0) {
+      size_t direct_write_size = (size - written) / 4096 * 4096;
+      // allocate aligned memory
+      void* direct_write_buf = aligned_alloc(4096, direct_write_size);
+      memcpy(direct_write_buf, data + written, direct_write_size);
+      ssize_t ret = pwrite(fd_, direct_write_buf, direct_write_size, file_offset_);
+      if (ret < 0 || ret != direct_write_size) {
+        std::cerr << "Failed to write to file, ret: " << ret << " errno: "
+                  << errno << std::endl;
+        return written;
+      }
+      written += direct_write_size;
+      file_offset_ += direct_write_size;
+      free(direct_write_buf);
+      std::cout << "direct write size: " << direct_write_size << " written: "
+                << written << " size: " << size << " file_offset_: " << file_offset_ << std::endl;
+    }
+    size_t to_write = std::min(size - written, buf_size_ - buf_pos_);
+    memcpy(static_cast<char*>(buffer_) + buf_pos_, data + written, to_write);
+    buf_pos_ += to_write;
+    written += to_write;
+    if (buf_pos_ == buf_size_) {
+      ssize_t ret = pwrite(fd_, buffer_, buf_size_, file_offset_);
+      CAFFE_ENFORCE(ret == buf_size_, "Failed to write to file");
+      buf_pos_ = 0;
+      file_offset_ += buf_size_;
+    }
+    std::cout << "to_write: " << to_write << " written: " << written << " size: " << size << " buf_pos_: " << buf_pos_ << " file_offset_: " << file_offset_ << std::endl;
+  }
+  return written;
+}
+
+size_t AlignedBuffer::writePadding(size_t padding_size) {
+  CAFFE_ENFORCE(padding_size < 8, "Padding size should be less than 8 bytes");
+  buf_pos_ += padding_size;
+  CAFFE_ENFORCE(buf_pos_ <= buf_size_, "Padding size is too large");
+  if (buf_pos_ == buf_size_) {
+    pwrite(fd_, buffer_, buf_pos_, file_offset_);
+    buf_pos_ = 0;
+    file_offset_ += buf_size_;
+  }
+  return padding_size;
+}
+
+#define BUFFER_SIZE 1<<20
+
+TensorWriter::TensorWriter(const std::string& filename)
+    : offset_(0), buffer_(filename, BUFFER_SIZE) {}
+
+TensorWriter::~TensorWriter() {
+}
+
+uint64_t TensorWriter::writeRecord(const char* data, size_t size) {
+  // CAFFE_ENFORCE(ofs_ >= 0, "TensorWriter is closed");
+  uint64_t start_offset = offset_;
+  // make sure the data is 64-bit aligned
+  size_t padding = (size % 8) ? (8 - size % 8) : 0;
+  size_t written = buffer_.writeData(data, size);
+  if (padding) {
+    written += buffer_.writePadding(padding);
+  }
+  offset_ += written;
+  std::cout << "writeRecord: " << size << " " << padding << " " << written << " " << offset_ << std::endl;
+  return start_offset;
+}
+
 void ScriptModuleSerializer::serialize(
     const Module& module,
     const ExtraFilesMap& extra_files,
@@ -512,6 +611,55 @@ void ScriptModuleSerializer::serialize(
         /*archive_name=*/"constants",
         /*archive_dir=*/"",
         /*tensor_dir=*/"constants/");
+  }
+  // Acquires and sets minimum (dynamic) version
+  for (auto& item : file_streams_) {
+    writer_.setMinVersion(item.value().minVersion());
+  }
+}
+
+void ScriptModuleSerializer::serializeConvertedModule(
+    const Module& module,
+    const ExtraFilesMap& extra_files,
+    bool bytecode_format,
+    bool save_mobile_debug_info) {
+  std::cout<<"serializeConvertedModule"<<std::endl;
+  C10_LOG_API_USAGE_ONCE("torch.script.convert");
+  writeExtraFiles(module, extra_files);
+    // Serialize the model object
+  writeArchiveAndExportTensor(
+      module._ivalue(),
+      /*archive_name=*/"data",
+      /*archive_dir=*/"",
+      /*tensor_dir=*/"data/"
+      );
+  // Then we serialize all code info.
+  convertTypes(module.type());
+  writeFiles("code/");
+  // The tensor constants from the code are written to a separate archive
+  // so loading the code does not depend on loading the data
+  std::vector<IValue> ivalue_constants(
+      constant_table_.begin(), constant_table_.end());
+  if (bytecode_format) {
+    // not implemented yet
+    TORCH_CHECK(
+        false,
+        "Bytecode format is not supported for converted models yet. Please use the default format.");
+    // writeArchive(
+    //     c10::ivalue::Tuple::create(ivalue_constants),
+    //     /*archive_name=*/"constants",
+    //     /*archive_dir=*/"",
+    //     /*tensor_dir=*/"constants/",
+    //     /*use_storage_context=*/true);
+
+    // writeByteCode(module, save_mobile_debug_info);
+  } else {
+    writeArchiveAndExportTensor(
+        c10::ivalue::Tuple::create(ivalue_constants),
+        /*archive_name=*/"constants",
+        /*archive_dir=*/"",
+        /*tensor_dir=*/"constants/"
+        );
   }
   // Acquires and sets minimum (dynamic) version
   for (auto& item : file_streams_) {
@@ -572,6 +720,9 @@ void ScriptModuleSerializer::writeArchive(
   for (const auto& td : data_pickle.tensorData()) {
     std::string tensor_name = tensor_names[i++];
     if (td.is_meta()) {
+      std::cout << "Warning: " << tensor_name << " is a meta tensor. "
+                << "Meta tensors are not saved in the torch.package archive."
+                << std::endl;
       writer_.writeRecord(tensor_dir + tensor_name, nullptr, 0);
       continue;
     }
@@ -580,10 +731,92 @@ void ScriptModuleSerializer::writeArchive(
       // storage has been serialzed already, skip
       continue;
     }
+    std::cout << "Serializing " << tensor_name << std::endl;
     writer_.writeRecord(
         tensor_dir + tensor_name,
         writable_td.data(),
         writable_td.sizeInBytes());
+  }
+
+  std::string fname = archive_dir + archive_name + ".pkl";
+  writer_.writeRecord(fname, data.data(), data.size());
+
+  // serialize all the captured run-time class types
+  for (const c10::ClassTypePtr& wroteType : memoizedClassTypes) {
+    convertNamedType(wroteType);
+  }
+}
+
+void ScriptModuleSerializer::writeArchiveAndExportTensor(
+    const IValue& value,
+    const std::string& archive_name,
+    const std::string& archive_dir,
+    const std::string& tensor_dir,
+    bool use_storage_context) {
+  std::vector<char> data;
+  // Vector to capture the run-time class types during pickling the IValues
+  std::vector<c10::ClassTypePtr> memoizedClassTypes;
+  std::vector<std::string> tensor_names;
+  // tensors that are already serialized in use_storage_context
+  std::unordered_set<std::string> serialized_tensors;
+  Pickler data_pickle(
+      [&](const char* buf, size_t size) {
+        data.insert(data.end(), buf, buf + size);
+      },
+      nullptr,
+      [&](const c10::ClassTypePtr& t) {
+        return type_name_uniquer_.getUniqueName(t);
+      },
+      &memoizedClassTypes,
+      [&](const at::Tensor& tensor) {
+        // returns a string to use in picker.cpp as storage obj key
+        if (use_storage_context) {
+          bool already_serialized =
+              storage_context_.hasStorage(tensor.storage());
+          std::string tensor_name =
+              std::to_string(
+                  storage_context_.getOrAddStorage(tensor.storage())) +
+              ".storage";
+          if (already_serialized) {
+            // this case is hit when storage has been serialized already
+            // from a torch.package context
+            serialized_tensors.insert(tensor_name);
+          }
+          tensor_names.push_back(tensor_name);
+        } else {
+          tensor_names.push_back(std::to_string(tensor_names.size()));
+        }
+        return tensor_names.back();
+      });
+  data_pickle.protocol();
+  data_pickle.pushIValue(value);
+  data_pickle.stop();
+  // write out tensor data
+  size_t i = 0;
+  std::string prefix = archive_name + "/";
+
+  TORCH_INTERNAL_ASSERT(tensor_names.size() == data_pickle.tensorData().size());
+
+  for (const auto& td : data_pickle.tensorData()) {
+    std::string tensor_name = tensor_names[i++];
+    if (td.is_meta()) {
+      std::cout << "Warning: " << tensor_name << " is a meta tensor. "
+                << "Meta tensors are not saved in the torch.package archive."
+                << std::endl;
+      writer_.writeRecord(tensor_dir + tensor_name, nullptr, 0);
+      continue;
+    }
+    WriteableTensorData writable_td = getWriteableTensorData(td);
+    if (use_storage_context && serialized_tensors.count(tensor_name)) {
+      // storage has been serialzed already, skip
+      continue;
+    }
+    uint64_t offset = p_tensor_writer_->writeRecord(writable_td.data(), writable_td.sizeInBytes());
+    // std::cout << "Serializing " << tensor_name << " at offset " << offset << std::endl;
+    writer_.writeRecord(
+        tensor_dir + tensor_name,
+        &offset,
+        sizeof(offset));
   }
 
   std::string fname = archive_dir + archive_name + ".pkl";
@@ -947,6 +1180,55 @@ void ExportModule(
     serializer.serialize(
         module, extra_files, bytecode_format, save_mobile_debug_info);
   }
+}
+
+void ConvertModule(
+    const Module& module,
+    const std::string& output_path,
+    const ExtraFilesMap& extra_files,
+    bool bytecode_format,
+    bool save_mobile_debug_info,
+    bool use_flatbuffer) {
+//   if (use_flatbuffer) {
+// #if defined(ENABLE_FLATBUFFER)
+//     auto writer_func = [&](const void* buf, size_t nbytes) -> size_t {
+//       std::fstream ofile(filename, std::ios::binary | std::ios::out);
+//       ofile.write(static_cast<const char*>(buf), nbytes);
+//       ofile.close();
+//       return !ofile ? 0 : nbytes;
+//     };
+//     save_mobile_module_to(
+//         module, extra_files, save_mobile_debug_info, writer_func);
+// #else
+//     TORCH_CHECK(
+//         false,
+//         "Trying to export as flatbuffer file but the build hasn't enabled flatbuffer");
+// #endif
+//   } else {
+//     caffe2::serialize::PyTorchStreamWriter writer(filename);
+//     ScriptModuleSerializer serializer(writer);
+//     serializer.serialize(
+//         module, extra_files, bytecode_format, save_mobile_debug_info);
+//   }
+
+  // create the output directory if it doesn't exist
+  std::string output_dir = output_path;
+  if (output_dir.back() != '/') {
+    output_dir += '/';
+  }
+  if (mkdir(output_dir.c_str(), 0777) == -1) {
+    if (errno != EEXIST) {
+      throw std::runtime_error("Failed to create output directory");
+    }
+  }
+  // add prefix to the file names
+  std::string metadata_filename = output_dir + "meta.pt";
+  std::string tensor_filename = output_dir + "tensor.rt"; // rt == raw tensor
+  caffe2::serialize::PyTorchStreamWriter writer(metadata_filename);
+  TensorWriter tensor_writer(tensor_filename);
+  ScriptModuleSerializer serializer(writer, &tensor_writer);
+  serializer.serializeConvertedModule(
+      module, extra_files, bytecode_format, save_mobile_debug_info);
 }
 
 namespace {

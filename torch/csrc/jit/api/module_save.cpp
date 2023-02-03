@@ -13,6 +13,11 @@ void Module::save(const std::string& filename, const ExtraFilesMap& extra_files)
   ExportModule(*this, filename, extra_files, false /* bytecode_format */);
 }
 
+void Module::convert(const std::string& output_path, const ExtraFilesMap& extra_files)
+    const {
+  ConvertModule(*this, output_path, extra_files, false /* bytecode_format */);
+}
+
 void Module::_save_for_mobile(
     std::ostream& out,
     const ExtraFilesMap& extra_files,

@@ -4,6 +4,9 @@
 #include <torch/csrc/jit/frontend/resolver.h>
 #include <torch/csrc/jit/frontend/tree_views.h>
 
+#include <unordered_map>
+#include <vector>
+
 namespace torch {
 namespace jit {
 
