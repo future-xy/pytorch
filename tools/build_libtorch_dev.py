@@ -20,12 +20,18 @@ if __name__ == "__main__":
         action="store_true",
         help="Stop once cmake terminates. Leave users a chance to adjust build options",
     )
+    parser.add_argument(
+        "--install-dir",
+        type=str,
+        default="/mnt/raid0nvme1/sl/lib/libtorch_dev",
+        help="Install directory",
+    )
     options = parser.parse_args()
 
     build_caffe2_dev(
         version=None,
         cmake_python_library=None,
-        install_dir=,
+        install_dir=options.install_dir,
         build_python=False,
         rerun_cmake=options.rerun_cmake,
         cmake_only=options.cmake_only,
