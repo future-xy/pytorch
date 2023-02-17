@@ -38,6 +38,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <regex>
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -576,6 +577,19 @@ uint64_t TensorWriter::writeRecord(const char* data, size_t size) {
   return start_offset;
 }
 
+MetaWriter::MetaWriter(const std::string& filename)
+    : ofs_(filename, std::ios::binary) {
+}
+
+MetaWriter::~MetaWriter() {
+  ofs_.close();
+}
+
+uint64_t MetaWriter::writeRecord(const std::string& str) {
+  ofs_ << str << std::endl;
+  return 0;
+}
+
 void ScriptModuleSerializer::serialize(
     const Module& module,
     const ExtraFilesMap& extra_files,
@@ -623,8 +637,8 @@ void ScriptModuleSerializer::serializeConvertedModule(
     const ExtraFilesMap& extra_files,
     bool bytecode_format,
     bool save_mobile_debug_info) {
-  std::cout<<"serializeConvertedModule"<<std::endl;
   C10_LOG_API_USAGE_ONCE("torch.script.convert");
+
   writeExtraFiles(module, extra_files);
     // Serialize the model object
   writeArchiveAndExportTensor(
@@ -731,7 +745,6 @@ void ScriptModuleSerializer::writeArchive(
       // storage has been serialzed already, skip
       continue;
     }
-    std::cout << "Serializing " << tensor_name << std::endl;
     writer_.writeRecord(
         tensor_dir + tensor_name,
         writable_td.data(),
@@ -825,6 +838,11 @@ void ScriptModuleSerializer::writeArchiveAndExportTensor(
   // serialize all the captured run-time class types
   for (const c10::ClassTypePtr& wroteType : memoizedClassTypes) {
     convertNamedType(wroteType);
+  }
+  std::unordered_set<std::string> meta_objects;
+  data_pickle.getMemoizedObjectsSet(meta_objects);
+  for (const auto& obj : meta_objects) {
+    p_meta_writer_->writeRecord(obj);
   }
 }
 
@@ -1222,11 +1240,14 @@ void ConvertModule(
     }
   }
   // add prefix to the file names
-  std::string metadata_filename = output_dir + "meta.pt";
-  std::string tensor_filename = output_dir + "tensor.rt"; // rt == raw tensor
+  std::string metadata_filename = output_dir + "model.graph";
+  std::string tensor_filename = output_dir + "model.tensor";
+  std::string metastructure_filename = output_dir + "model.metastructure";
   caffe2::serialize::PyTorchStreamWriter writer(metadata_filename);
   TensorWriter tensor_writer(tensor_filename);
-  ScriptModuleSerializer serializer(writer, &tensor_writer);
+  MetaWriter meta_writer(metastructure_filename);
+
+  ScriptModuleSerializer serializer(writer, &tensor_writer, &meta_writer);
   serializer.serializeConvertedModule(
       module, extra_files, bytecode_format, save_mobile_debug_info);
 }

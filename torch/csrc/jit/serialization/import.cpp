@@ -85,7 +85,8 @@ class ScriptModuleDeserializer final {
  public:
   ScriptModuleDeserializer(
       std::shared_ptr<CompilationUnit> cu,
-      std::shared_ptr<PyTorchStreamReader> reader)
+      std::shared_ptr<PyTorchStreamReader> reader,
+      const std::string& metastructure_filename = "")
       : compilation_unit_(std::move(cu)),
         reader_(std::move(reader)),
         code_prefix_("code/"),
@@ -98,7 +99,8 @@ class ScriptModuleDeserializer final {
               return findSourceInArchiveFromQualifier(
                   *reader_, code_prefix_, qualifier);
             },
-            reader_->version()) {}
+            reader_->version(),
+            metastructure_filename) {}
 
   ScriptModuleDeserializer(
       std::shared_ptr<CompilationUnit> cu,
@@ -199,11 +201,8 @@ IValue ScriptModuleDeserializer::readArchive(const std::string& archive_name) {
 
 IValue ScriptModuleDeserializer::readArchiveFast(const std::string& archive_name, const void* tensor_pool) {
   auto type_resolver = [&](const c10::QualifiedName& qn) {
-    // auto start = std::chrono::high_resolution_clock::now();
     auto cls = source_importer_.loadType(qn);
-    // auto end = std::chrono::high_resolution_clock::now();
-    // auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-    // std::cout << "type resolver takes " << duration.count() << " microseconds" << std::endl;
+    // TODO: we should use a faster way to get the type ptr
     return c10::StrongTypePtr(compilation_unit_, std::move(cls));
   };
 
@@ -590,17 +589,19 @@ Module load(
   return deserializer.deserialize(device, extra_files);
 }
 
-Module fastLoad(const std::string& meta_filename, c10::optional<at::Device> device, const void* tensor_pool) {
+Module fastLoad(const std::string& model_path, c10::optional<at::Device> device, const void* tensor_pool) {
   ExtraFilesMap extra_files;
-  return fastLoad(meta_filename, device,tensor_pool, extra_files);
+  return fastLoad(model_path, device, tensor_pool, extra_files);
 }
 
 Module fastLoad(
-    const std::string& meta_filename,
+    const std::string& model_path,
     c10::optional<at::Device> device,
     const void* tensor_pool,
     ExtraFilesMap& extra_files) {
-  auto format = getFileFormat(meta_filename);
+  std::string graph_filename = model_path + "model.graph";
+  std::string metastructure_filename = model_path + "model.metastructure";
+  auto format = getFileFormat(graph_filename);
   switch (format) {
     case FileFormat::FlatbufferFileFormat: {
       std::cout << "Loading Flatbuffer file format\n";
@@ -614,8 +615,9 @@ Module fastLoad(
       case FileFormat::ZipFileFormat: {
         // std::cout << "Loading Zip file format\n";
         std::unique_ptr<FileAdapter> rai =
-            std::make_unique<FileAdapter>(meta_filename);
-        auto module = fastLoad(std::move(rai), device,tensor_pool, extra_files);
+            std::make_unique<FileAdapter>(graph_filename);
+        auto module =
+            fastLoad(std::move(rai), device, tensor_pool, metastructure_filename, extra_files);
         return module;
       }
 
@@ -629,6 +631,7 @@ Module fastLoad(
     std::shared_ptr<ReadAdapterInterface> rai,
     c10::optional<c10::Device> device,
     const void* tensor_pool,
+    const std::string& metastructure_filename,
     ExtraFilesMap& extra_files) {
   // Verify that we're loading a zip archive and not a torch.save pickle
   // archive (marked by the 0x80 0x02 bytes at the start)
@@ -642,7 +645,7 @@ Module fastLoad(
   auto reader = std::make_shared<PyTorchStreamReader>(std::move(rai));
   auto cu = std::make_shared<CompilationUnit>();
 
-  ScriptModuleDeserializer deserializer(std::move(cu), std::move(reader));
+  ScriptModuleDeserializer deserializer(std::move(cu), std::move(reader), metastructure_filename);
   return deserializer.fastDeserialize(device, tensor_pool, extra_files);
 }
 

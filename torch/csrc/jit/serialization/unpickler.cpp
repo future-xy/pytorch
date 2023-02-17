@@ -439,6 +439,7 @@ PickleOpCode Unpickler::readInstruction() {
       // Module name, it's not needed for anything
       auto module_name = readString();
       auto class_name = readString();
+      // std::cout << "GLOBAL " << module_name << " " << class_name << std::endl;
       readGlobal(module_name, class_name);
     } break;
     case PickleOpCode::NEWOBJ: {
@@ -501,7 +502,12 @@ PickleOpCode Unpickler::readInstruction() {
             // If there are no elements in the tensor, there's no point in
             // reading a zero (0) byte file from the input stream and paying
             // that cost.
+            // auto start = std::chrono::high_resolution_clock::now();
             storage_ptr = read_record_(key);
+            // auto end = std::chrono::high_resolution_clock::now();
+            // std::cout << "deserializing tensor " << key << " from file took "
+            //           << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count()
+            //           << " ms" << std::endl;
           }
         }
 
@@ -562,7 +568,7 @@ PickleOpCode Unpickler::readInstruction() {
 void Unpickler::readGlobal(
     const std::string& module_name,
     const std::string& class_name) {
-  auto start = std::chrono::high_resolution_clock::now();
+  // std::cout << module_name << " " << class_name << std::endl;
   // TODO [unpickler refactor] __main__ isn't used by the pickler anymore, this
   // is only here for bc-compatibility reasons
   if (module_name == "__main__") {

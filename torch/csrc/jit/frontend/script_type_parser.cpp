@@ -222,23 +222,11 @@ c10::optional<std::string> ScriptTypeParser::parseBaseTypeName(
 }
 
 TypePtr ScriptTypeParser::parseTypeFromExpr(const Expr& expr) const {
-  // the resolver needs to recursively resolve the expression, so to avoid
-  // resolving all type expr subtrees we only use it for the top level
-  // expression and base type names.
-  // TODO: which is using? resolver_ or parseTypeFromExprImpl?
   if (resolver_) {
-    // auto start = std::chrono::high_resolution_clock::now();
-    // std::cout << "parseTypeFromExpr: resolving " << expr.range().text().str() << std::endl;
     if (auto typePtr =
             resolver_->resolveType(expr.range().text().str(), expr.range())) {
-      // std::cout << "parseTypeFromExpr: resolved " << expr.range().text().str() << std::endl;
-      // auto end = std::chrono::high_resolution_clock::now();
-      // auto dur = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-      // std::cout << "parseTypeFromExpr: resolved " << expr.range().text().str() << " in " << dur.count() << "us" << std::endl;
       return typePtr;
-    } /*else {
-      std::cout << "parseTypeFromExpr: failed to resolve " << expr.range().text().str() << std::endl;
-    }*/
+    }
   }
   return parseTypeFromExprImpl(expr);
 }
@@ -246,6 +234,7 @@ TypePtr ScriptTypeParser::parseTypeFromExpr(const Expr& expr) const {
 TypePtr ScriptTypeParser::parseTypeFromExprImpl(const Expr& expr) const {
   // auto start = std::chrono::high_resolution_clock::now();
   if (expr.kind() == TK_SUBSCRIPT) {
+    // std::cout << "parseTypeFromExprImpl: TK_SUBSCRIPT" << std::endl;
     auto subscript = Subscript(expr);
     auto value_name = parseBaseTypeName(subscript.value());
     if (!value_name) {

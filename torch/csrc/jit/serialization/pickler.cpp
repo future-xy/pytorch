@@ -8,6 +8,7 @@
 #include <torch/csrc/jit/api/function_impl.h>
 #include <torch/csrc/jit/serialization/pickler.h>
 #include <string>
+#include <regex>
 
 namespace torch {
 namespace jit {
@@ -92,6 +93,7 @@ void Pickler::pushIValueImpl(const IValue& ivalue) {
   } else if (ivalue.isList()) {
     pushGenericList(ivalue);
   } else if (ivalue.isObject()) {
+    object_depth_++;
     auto obj = ivalue.toObject();
     auto type = obj->type();
     if (memoized_class_types_ != nullptr) {
@@ -104,6 +106,11 @@ void Pickler::pushIValueImpl(const IValue& ivalue) {
     if (type_renamer_) {
       type_name = type_renamer_(type);
     }
+    std::string original_name = type_name.qualifiedName();
+    // std::cout << std::string(object_depth_, '\t') << original_name << std::endl;
+    // remove ".___torch_mangle_\d+" from the name
+    std::regex re("\\.___torch_mangle_\\d+");
+    std::string demangled_name = std::regex_replace(original_name, re, "");
     pushGlobal(type_name.prefix(), type_name.name());
     push<PickleOpCode>(PickleOpCode::EMPTY_TUPLE);
     push<PickleOpCode>(PickleOpCode::NEWOBJ);
@@ -113,13 +120,23 @@ void Pickler::pushIValueImpl(const IValue& ivalue) {
     } else {
       push<PickleOpCode>(PickleOpCode::EMPTY_DICT);
       push<PickleOpCode>(PickleOpCode::MARK);
+      std::string self_name = demangled_name;
       for (size_t i = 0, n = type->numAttributes(); i < n; ++i) {
         pushString(type->getAttributeName(i));
         pushIValue(obj->getSlot(i));
       }
+      if (memoized_objects_set_.find(self_name) != memoized_objects_set_.end()) {
+        memoized_objects_map_[type_name.qualifiedName()] = demangled_name;
+        std::cout << std::string(object_depth_, '\t') << original_name << " -> " << demangled_name << std::endl;
+      } else {
+        memoized_objects_map_[type_name.qualifiedName()] = original_name;
+        memoized_objects_set_.insert(self_name);
+        std::cout << std::string(object_depth_, '\t') << original_name << " -> " << original_name << " (new)" << std::endl;
+      }
       push<PickleOpCode>(PickleOpCode::SETITEMS);
     }
     push<PickleOpCode>(PickleOpCode::BUILD);
+    object_depth_--;
   } else if (ivalue.isDevice()) {
     pushDevice(ivalue);
   } else if (ivalue.isCapsule()) {

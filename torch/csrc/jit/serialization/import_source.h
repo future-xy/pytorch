@@ -28,7 +28,8 @@ struct SourceImporterImpl : public Resolver,
       std::shared_ptr<CompilationUnit> cu,
       const std::vector<at::IValue>* constant_table,
       SourceLoader source_loader,
-      size_t version);
+      size_t version,
+      const std::string& meta_structure_file = "");
   TypePtr findNamedType(const QualifiedName& name);
   Function* findFunction(const QualifiedName& name);
   void parseSourceIfNeeded(const std::string& qualifier);
@@ -74,6 +75,10 @@ struct SourceImporterImpl : public Resolver,
   // typePtr buffer for modules
   std::unordered_map<std::string, size_t> resolved_types_;
   std::vector<TypePtr> type_buffer_;
+
+  // meta structure file
+  std::ifstream meta_structure_fs_;
+  std::unordered_set<std::string> imported_meta_structure_;
 };
 
 // Given a directory of serialized TorchScript sources,
@@ -87,7 +92,8 @@ struct TORCH_API SourceImporter {
       std::shared_ptr<CompilationUnit> cu,
       const std::vector<at::IValue>* constant_table,
       SourceLoader loader,
-      size_t version);
+      size_t version,
+      const std::string& meta_structure_file = "");
 
   TypePtr loadType(const QualifiedName& name) const;
 

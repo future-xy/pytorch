@@ -98,13 +98,28 @@ class TORCH_API TensorWriter final {
   AlignedBuffer buffer_;
 }; 
 
+// A meta structure writer that writes the meta data (strings) to a file.
+class TORCH_API MetaWriter final {
+ public:
+  explicit MetaWriter(const std::string& filename);
+  ~MetaWriter();
+
+  uint64_t writeRecord(const std::string& str);
+
+ private:
+   std::ofstream ofs_;
+};
+
 // Serializer for both oldsyle and unified format TorchScript serialization
 class TORCH_API ScriptModuleSerializer {
  public:
   explicit ScriptModuleSerializer(
       caffe2::serialize::PyTorchStreamWriter& export_writer,
-      TensorWriter* tensor_writer = nullptr)
-      : writer_(export_writer), p_tensor_writer_(tensor_writer), current_source_range_tag_(0) {}
+      TensorWriter* tensor_writer = nullptr, MetaWriter* meta_writer = nullptr)
+      : writer_(export_writer),
+        p_tensor_writer_(tensor_writer),
+        p_meta_writer_(meta_writer),
+        current_source_range_tag_(0) {}
 
   void writeFiles(const std::string& code_dir);
   void serialize(
@@ -145,6 +160,7 @@ class TORCH_API ScriptModuleSerializer {
   std::vector<at::IValue> constant_table_;
 
   TensorWriter* p_tensor_writer_;
+  MetaWriter* p_meta_writer_;
 
   std::unordered_set<c10::NamedTypePtr> converted_types_;
   PrintDepsTable class_deps_;

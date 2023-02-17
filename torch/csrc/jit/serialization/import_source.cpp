@@ -112,10 +112,13 @@ SourceImporterImpl::SourceImporterImpl(
     std::shared_ptr<CompilationUnit> cu,
     const std::vector<at::IValue>* constant_table,
     SourceLoader source_loader,
-    size_t version)
+    size_t version,
+    const std::string& meta_structure_file)
     : cu_(std::move(cu)),
       source_loader_(std::move(source_loader)),
-      version_(version) {
+      version_(version),
+      // meta_structure_file contains names of all meta modules, one per line
+      meta_structure_fs_(meta_structure_file) {
   env_ = {
       {"torch", std::make_shared<BuiltinModule>("aten", version)},
       {"ops", std::make_shared<OpsValue>(version)},
@@ -127,6 +130,19 @@ SourceImporterImpl::SourceImporterImpl(
       {"unchecked_cast", SpecialFormValue::create(prim::unchecked_cast)},
       {"uninitialized", SpecialFormValue::create(prim::Uninitialized)},
   };
+  // load meta modules from meta_structure_file_ to std::unordered_set<std::string> imported_meta_structure_;
+  if (meta_structure_fs_.is_open()) {
+    std::string line;
+    while (std::getline(meta_structure_fs_, line)) {
+      if (line.empty()) {
+        continue;
+      }
+      imported_meta_structure_.insert(line);
+    }
+    for (const auto& meta_module : imported_meta_structure_) {
+      std::cout << "Imported meta module: " << meta_module << std::endl;
+    }
+  }
 }
 
 TypePtr SourceImporterImpl::findNamedType(const QualifiedName& name) {
@@ -267,13 +283,10 @@ TypePtr SourceImporterImpl::resolveType(
     const std::string& name,
     const SourceRange& loc) {
   // check if we have already resolved this type
-  // NOTE: we only cache types that are in the '__torch__' namespace
-  // NOTE2: currently we only cache types in whitelist
-  if (name.substr(0, 9) == "__torch__" &&
-      // name.find(type_whitelist) != std::string::npos &&
-      name.find(type_blacklist) == std::string::npos &&
-      name.find("___torch_mangle_425") == std::string::npos &&
-      name.find("___torch_mangle_420") == std::string::npos) {
+  // NOTE: we only cache types that are in the '__torch__' namespace.
+  // For meta types, i.e., types in imported_meta_structure_, we must resolve them
+  if (name.find("__torch__") != std::string::npos &&
+      imported_meta_structure_.find(name) == imported_meta_structure_.end()) {
     std::string cached_name = name;
     // process name to remove mangled name,
     // e.g., '__torch__.transformers.models.bert.modeling_bert.___torch_mangle_29.BertLayer' ->
@@ -281,8 +294,8 @@ TypePtr SourceImporterImpl::resolveType(
     if (name.find("___torch_mangle_") != std::string::npos) {
       std::string prefix = name.substr(0, name.find("___torch_mangle_"));
       std::string suffix = name.substr(name.find("___torch_mangle_"));
-      std::string mangled_name = suffix.substr(suffix.find(".") + 1);
-      cached_name = prefix + mangled_name;
+      std::string de_mangled_name = suffix.substr(suffix.find(".") + 1);
+      cached_name = prefix + de_mangled_name;
     }
     // std::cout << "convert type " << name << " to " << cached_name << std::endl;
     auto it = resolved_types_.find(cached_name);
@@ -304,40 +317,9 @@ TypePtr SourceImporterImpl::resolveType(
   return findNamedType(QualifiedName(name));
 }
 
-// TypePtr SourceImporterImpl::resolveType_BK(
+// TypePtr SourceImporterImpl::resolveType(
 //     const std::string& name,
 //     const SourceRange& loc) {
-//   // // check if we have already resolved this type
-//   // // NOTE: we only cache types that are in the '__torch__' namespace
-//   // // NOTE2: currently we only cache types in whitelist: BertLayer,
-//   // //        e.g., '__torch__.transformers.models.bert.modeling_bert.BertLayer'
-//   // if (name.substr(0, 9) == "__torch__" &&
-//   //     name.find("BertLayer") != std::string::npos) {
-//   //   std::string cached_name = name;
-//   //   // process name to remove mangled name,
-//   //   // e.g., '__torch__.transformers.models.bert.modeling_bert.___torch_mangle_29.BertLayer' ->
-//   //   // '__torch__.transformers.models.bert.modeling_bert.BertLayer'
-//   //   if (name.find("___torch_mangle_") != std::string::npos) {
-//   //     std::string prefix = name.substr(0, name.find("___torch_mangle_"));
-//   //     std::string suffix = name.substr(name.find("___torch_mangle_"));
-//   //     std::string mangled_name = suffix.substr(suffix.find(".") + 1);
-//   //     cached_name = prefix + mangled_name;
-//   //   }
-//   //   std::cout << "convert type " << name << " to " << cached_name << std::endl;
-//   //   auto it = resolved_type_ptrs_.find(cached_name);
-//   //   if (it != resolved_type_ptrs_.end()) {
-//   //     std::cout << "found type " << cached_name << " in cache" << std::endl;
-//   //     return it->second;
-//   //     // dry run
-//   //     // return findNamedType(QualifiedName(name));
-//   //   } else {
-//   //     auto result = findNamedType(QualifiedName(name));
-//   //     if (result) {
-//   //       resolved_type_ptrs_[cached_name] = result;
-//   //     }
-//   //     return result;
-//   //   }
-//   // }
 //   return findNamedType(QualifiedName(name));
 // }
 
@@ -609,6 +591,7 @@ void SourceImporterImpl::importClass(
       case TK_VAR: {
         const auto name = Var(assign.lhs()).name().name();
         TORCH_INTERNAL_ASSERT(name != "__parameters__");
+        // std::cout << "case TK_VAR: " << name << std::endl;
         const auto type = type_parser.parseTypeFromExpr(assign.type().get());
         const bool is_parameter = parameter_names.count(name);
         const bool is_buffer = buffer_names.count(name);
@@ -617,6 +600,7 @@ void SourceImporterImpl::importClass(
       case TK_SUBSCRIPT: {
         const auto name =
             StringLiteral(Subscript(assign.lhs()).subscript_exprs()[0]).text();
+        // std::cout << "case TK_SUBSCRIPT: " << name << std::endl;
         const auto type = type_parser.parseTypeFromExpr(assign.rhs().get());
         const bool is_parameter = parameter_names.count(name);
         const bool is_buffer = buffer_names.count(name);
@@ -757,6 +741,7 @@ void SourceImporterImpl::importNamedTuple(
       default_val = parsed[0];
     }
 
+    // std::cout << "type: " << assign.type().get().kind() << std::endl;
     auto type = type_parser.parseTypeFromExpr(assign.type().get());
 
     field_names.emplace_back(std::move(name));
@@ -834,12 +819,14 @@ SourceImporter::SourceImporter(
     std::shared_ptr<CompilationUnit> cu,
     const std::vector<IValue>* constant_table,
     SourceLoader loader,
-    size_t version)
+    size_t version,
+    const std::string& meta_structure_file)
     : pImpl(std::make_shared<SourceImporterImpl>(
           std::move(cu),
           constant_table,
           std::move(loader),
-          version)) {}
+          version,
+          meta_structure_file)) {}
 
 TypePtr SourceImporter::loadType(const QualifiedName& name) const {
   ScriptTypeParser type_parser(pImpl);

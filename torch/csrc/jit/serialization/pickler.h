@@ -4,6 +4,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <unordered_map>
+#include <unordered_set>
 
 #include <ATen/core/ivalue.h>
 #include <ATen/core/jit_type.h>
@@ -159,6 +161,16 @@ class TORCH_API Pickler {
   void pushInt(int64_t value);
   void pushLong(const std::string& data);
 
+  // get memoized_objects_map_
+  void getMemoizedObjectsMap(std::unordered_map<std::string, std::string>& map) {
+    map = memoized_objects_map_;
+  }
+
+  // get memoized_objects_set_
+  void getMemoizedObjectsSet(std::unordered_set<std::string>& set) {
+    set = memoized_objects_set_;
+  }
+
  private:
   void pushIValueImpl(const IValue& ivalue);
   void startTypeTag();
@@ -274,6 +286,12 @@ class TORCH_API Pickler {
   std::unordered_map<std::string, uint32_t> memoized_globals_map_;
   std::unordered_map<std::string, uint32_t> memoized_strings_map_;
   std::unordered_map<std::string, uint32_t> memoized_devices_map_;
+
+  int object_depth_ = 0;
+  // <original_name, cached_name>
+  std::unordered_map<std::string, std::string> memoized_objects_map_;
+  // object cache for memoization
+  std::unordered_set<std::string> memoized_objects_set_;
 };
 
 // returns a (tensor, record_size) for a tensor, converting it to a CPU tensor
