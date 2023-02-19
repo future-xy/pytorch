@@ -107,7 +107,7 @@ void Pickler::pushIValueImpl(const IValue& ivalue) {
       type_name = type_renamer_(type);
     }
     std::string original_name = type_name.qualifiedName();
-    // std::cout << std::string(object_depth_, '\t') << original_name << std::endl;
+    std::cout << std::string(object_depth_, '\t') << original_name << std::endl;
     // remove ".___torch_mangle_\d+" from the name
     std::regex re("\\.___torch_mangle_\\d+");
     std::string demangled_name = std::regex_replace(original_name, re, "");
@@ -122,6 +122,12 @@ void Pickler::pushIValueImpl(const IValue& ivalue) {
       push<PickleOpCode>(PickleOpCode::MARK);
       std::string self_name = demangled_name;
       for (size_t i = 0, n = type->numAttributes(); i < n; ++i) {
+        // // if it is not object, print name and type
+        // if (!obj->getSlot(i).isObject()) {
+        //   std::cout << std::string(object_depth_ + 1, '\t')
+        //             << type->getAttributeName(i) << " : "
+        //             << obj->getSlot(i).tagKind() << std::endl;
+        // }
         pushString(type->getAttributeName(i));
         pushIValue(obj->getSlot(i));
       }
@@ -217,6 +223,7 @@ void Pickler::pushIValue(const IValue& ivalue) {
   // outer granularity.  Immutable ivalues are memoized by value equality which
   // is handled in the type-specific handlers inside pushIValueImpl.
   if (shouldMemoizeByPointer) {
+    // std::cout << std::string(object_depth_+1, '\t')  << ivalue.tagKind() << " should memoize by pointer" << std::endl;
     const void* ptr = ivalue.internalToPointer();
     TORCH_CHECK(
         ptr != nullptr,

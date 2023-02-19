@@ -77,8 +77,8 @@ struct SourceImporterImpl : public Resolver,
   std::vector<TypePtr> type_buffer_;
 
   // meta structure file
-  std::ifstream meta_structure_fs_;
   std::unordered_set<std::string> imported_meta_structure_;
+  bool enable_meta_structure_ = false;
 };
 
 // Given a directory of serialized TorchScript sources,

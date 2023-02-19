@@ -116,9 +116,7 @@ SourceImporterImpl::SourceImporterImpl(
     const std::string& meta_structure_file)
     : cu_(std::move(cu)),
       source_loader_(std::move(source_loader)),
-      version_(version),
-      // meta_structure_file contains names of all meta modules, one per line
-      meta_structure_fs_(meta_structure_file) {
+      version_(version) {
   env_ = {
       {"torch", std::make_shared<BuiltinModule>("aten", version)},
       {"ops", std::make_shared<OpsValue>(version)},
@@ -131,7 +129,9 @@ SourceImporterImpl::SourceImporterImpl(
       {"uninitialized", SpecialFormValue::create(prim::Uninitialized)},
   };
   // load meta modules from meta_structure_file_ to std::unordered_set<std::string> imported_meta_structure_;
-  if (meta_structure_fs_.is_open()) {
+  if (meta_structure_file != "") {
+    std::ifstream meta_structure_fs_(meta_structure_file);
+    TORCH_CHECK(meta_structure_fs_.is_open(), "Cannot open meta structure file: ", meta_structure_file);
     std::string line;
     while (std::getline(meta_structure_fs_, line)) {
       if (line.empty()) {
@@ -139,9 +139,8 @@ SourceImporterImpl::SourceImporterImpl(
       }
       imported_meta_structure_.insert(line);
     }
-    // for (const auto& meta_module : imported_meta_structure_) {
-    //   std::cout << "Imported meta module: " << meta_module << std::endl;
-    // }
+    TORCH_CHECK(imported_meta_structure_.size() > 0, "No meta module is imported from meta structure file: ", meta_structure_file);
+    enable_meta_structure_ = true;
   }
 }
 
@@ -274,46 +273,49 @@ std::shared_ptr<SugaredValue> SourceImporterImpl::resolveValue(
   return nullptr;
 }
 
-// whitelist of types that we cache
-const std::string type_whitelist = "BertLayer";
-// blacklist of types that we don't cache
-const std::string type_blacklist = "___torch_mangle_419";
-
 TypePtr SourceImporterImpl::resolveType(
     const std::string& name,
     const SourceRange& loc) {
   // check if we have already resolved this type
   // NOTE: we only cache types that are in the '__torch__' namespace.
-  // For meta types, i.e., types in imported_meta_structure_, we must resolve them
-  if (name.find("__torch__") != std::string::npos &&
-      imported_meta_structure_.find(name) == imported_meta_structure_.end()) {
-    std::string cached_name = name;
-    // process name to remove mangled name,
-    // e.g., '__torch__.transformers.models.bert.modeling_bert.___torch_mangle_29.BertLayer' ->
-    // '__torch__.transformers.models.bert.modeling_bert.BertLayer'
-    if (name.find("___torch_mangle_") != std::string::npos) {
-      std::string prefix = name.substr(0, name.find("___torch_mangle_"));
-      std::string suffix = name.substr(name.find("___torch_mangle_"));
-      std::string de_mangled_name = suffix.substr(suffix.find(".") + 1);
-      cached_name = prefix + de_mangled_name;
-    }
-    // std::cout << "convert type " << name << " to " << cached_name << std::endl;
-    auto it = resolved_types_.find(cached_name);
-    if (it != resolved_types_.end()) {
-      // std::cout << "found type " << cached_name << " in cache" << std::endl;
-      return type_buffer_[it->second];
-      // dry run
-      // return findNamedType(QualifiedName(name));
-    } else {
-      auto result = findNamedType(QualifiedName(name));
-      if (result) {
-        // std::cout << "cache type " << cached_name << std::endl;
-        type_buffer_.push_back(result);
-        resolved_types_[cached_name] = type_buffer_.size() - 1;
+  // For meta types, i.e., types in imported_meta_structure_, we must resolve
+  // them
+  if (enable_meta_structure_) {
+    if (name.find("__torch__") != std::string::npos &&
+        imported_meta_structure_.find(name) == imported_meta_structure_.end()) {
+      std::string cached_name = name;
+      // process name to remove mangled name,
+      // e.g.,
+      // '__torch__.transformers.models.bert.modeling_bert.___torch_mangle_29.BertLayer'
+      // ->
+      // '__torch__.transformers.models.bert.modeling_bert.BertLayer'
+      if (name.find("___torch_mangle_") != std::string::npos) {
+        std::string prefix = name.substr(0, name.find("___torch_mangle_"));
+        std::string suffix = name.substr(name.find("___torch_mangle_"));
+        std::string de_mangled_name = suffix.substr(suffix.find(".") + 1);
+        cached_name = prefix + de_mangled_name;
       }
-      return result;
+      // std::cout << "convert type " << name << " to " << cached_name <<
+      // std::endl;
+      auto it = resolved_types_.find(cached_name);
+      if (it != resolved_types_.end()) {
+        // std::cout << "found type " << cached_name << " in cache" <<
+        // std::endl;
+        return type_buffer_[it->second];
+        // dry run
+        // return findNamedType(QualifiedName(name));
+      } else {
+        auto result = findNamedType(QualifiedName(name));
+        if (result) {
+          // std::cout << "cache type " << cached_name << std::endl;
+          type_buffer_.push_back(result);
+          resolved_types_[cached_name] = type_buffer_.size() - 1;
+        }
+        return result;
+      }
     }
   }
+
   return findNamedType(QualifiedName(name));
 }
 
