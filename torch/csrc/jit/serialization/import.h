@@ -98,18 +98,18 @@ TORCH_API Module load(
     c10::optional<c10::Device> device,
     ExtraFilesMap& extra_files);
 
-TORCH_API Module fastLoad(const std::string& model_path, c10::optional<at::Device> device, const void* tensor_pool);
+TORCH_API Module
+fastLoad(const std::string& model_path,
+         const std::unordered_map<std::string, void*>& tensor_pool);
 
 TORCH_API Module fastLoad(
     const std::string& model_path,
-    c10::optional<at::Device> device,
-    const void* tensor_pool,
+    const std::unordered_map<std::string, void*>& tensor_pool,
     ExtraFilesMap& extra_files);
 
 TORCH_API Module fastLoad(
     std::shared_ptr<caffe2::serialize::ReadAdapterInterface> rai,
-    c10::optional<c10::Device> device,
-    const void* tensor_pool,
+    const std::unordered_map<std::string, void*>& tensor_pool,
     const std::string& meta_structure_file,
     ExtraFilesMap& extra_files);
 

@@ -91,11 +91,13 @@ class TORCH_API TensorWriter final {
   explicit TensorWriter(const std::string& filename);
   ~TensorWriter();
 
-  uint64_t writeRecord(const char* data, size_t size);
+  uint64_t writeRecord(const char* data, size_t size, std::string device);
 
  private:
   size_t offset_;
-  AlignedBuffer buffer_;
+//   AlignedBuffer buffer_;
+  std::string filename_;
+  std::unordered_map<std::string, std::unique_ptr<AlignedBuffer>> device_buffers_;
 }; 
 
 // A meta structure writer that writes the meta data (strings) to a file.

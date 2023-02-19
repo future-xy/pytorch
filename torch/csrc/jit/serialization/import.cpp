@@ -128,13 +128,14 @@ class ScriptModuleDeserializer final {
       ExtraFilesMap& extra_files);
 
   Module fastDeserialize(
-      c10::optional<at::Device> device,
-      const void* tensor_pool,
+      const std::unordered_map<std::string, void*>& tensor_pool,
       ExtraFilesMap& extra_files);
 
  private:
   IValue readArchive(const std::string& archive_name);
-  IValue readArchiveFast(const std::string& archive_name, const void* tensor_pool);
+  IValue readArchiveFast(
+      const std::string& archive_name,
+      const std::unordered_map<std::string, void*>& tensor_pool);
   std::shared_ptr<CompilationUnit> compilation_unit_;
   std::shared_ptr<PyTorchStreamReader> reader_;
   std::shared_ptr<DeserializationStorageContext> storage_context_;
@@ -199,7 +200,9 @@ IValue ScriptModuleDeserializer::readArchive(const std::string& archive_name) {
       storage_context_);
 }
 
-IValue ScriptModuleDeserializer::readArchiveFast(const std::string& archive_name, const void* tensor_pool) {
+IValue ScriptModuleDeserializer::readArchiveFast(
+    const std::string& archive_name,
+    const std::unordered_map<std::string, void*>& tensor_pool) {
   auto type_resolver = [&](const c10::QualifiedName& qn) {
     auto cls = source_importer_.loadType(qn);
     // TODO: we should use a faster way to get the type ptr
@@ -350,8 +353,7 @@ Module ScriptModuleDeserializer::deserialize(
 }
 
 Module ScriptModuleDeserializer::fastDeserialize(
-    c10::optional<at::Device> device,
-    const void* tensor_pool,
+    const std::unordered_map<std::string, void*>& tensor_pool,
     ExtraFilesMap& extra_files) {
   // we populate the upgraders map before any load starts
 #if ENABLE_UPGRADERS
@@ -359,7 +361,8 @@ Module ScriptModuleDeserializer::fastDeserialize(
 #endif
   C10_LOG_API_USAGE_ONCE("torch.script.fastLoad");
 
-  device_ = device;
+  // device is not used in fastDeserialize
+  device_ = c10::nullopt;
   // Load extra files.
   for (const auto& kv : extra_files) {
     const std::string& key = "extra/" + kv.first;
@@ -589,15 +592,14 @@ Module load(
   return deserializer.deserialize(device, extra_files);
 }
 
-Module fastLoad(const std::string& model_path, c10::optional<at::Device> device, const void* tensor_pool) {
+Module fastLoad(const std::string& model_path, const std::unordered_map<std::string, void*>& tensor_pool) {
   ExtraFilesMap extra_files;
-  return fastLoad(model_path, device, tensor_pool, extra_files);
+  return fastLoad(model_path, tensor_pool, extra_files);
 }
 
 Module fastLoad(
     const std::string& model_path,
-    c10::optional<at::Device> device,
-    const void* tensor_pool,
+    const std::unordered_map<std::string, void*>& tensor_pool,
     ExtraFilesMap& extra_files) {
   std::string graph_filename = model_path + "model.graph";
   std::string metastructure_filename = model_path + "model.metastructure";
@@ -617,7 +619,7 @@ Module fastLoad(
         std::unique_ptr<FileAdapter> rai =
             std::make_unique<FileAdapter>(graph_filename);
         auto module =
-            fastLoad(std::move(rai), device, tensor_pool, metastructure_filename, extra_files);
+            fastLoad(std::move(rai), tensor_pool, metastructure_filename, extra_files);
         return module;
       }
 
@@ -629,8 +631,7 @@ Module fastLoad(
 
 Module fastLoad(
     std::shared_ptr<ReadAdapterInterface> rai,
-    c10::optional<c10::Device> device,
-    const void* tensor_pool,
+    const std::unordered_map<std::string, void*>& tensor_pool,
     const std::string& metastructure_filename,
     ExtraFilesMap& extra_files) {
   // Verify that we're loading a zip archive and not a torch.save pickle
@@ -646,7 +647,7 @@ Module fastLoad(
   auto cu = std::make_shared<CompilationUnit>();
 
   ScriptModuleDeserializer deserializer(std::move(cu), std::move(reader), metastructure_filename);
-  return deserializer.fastDeserialize(device, tensor_pool, extra_files);
+  return deserializer.fastDeserialize(tensor_pool, extra_files);
 }
 
 // Replace object with a newly created but equivalent object.

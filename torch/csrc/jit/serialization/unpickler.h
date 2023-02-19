@@ -45,7 +45,6 @@ class TORCH_API Unpickler {
       : reader_(std::move(reader)),
         tensor_table_(tensor_table),
         type_resolver_(std::move(type_resolver)),
-        tensor_pool_(nullptr),
         use_storage_device_(false),
         type_parser_(type_parser),
         version_(caffe2::serialize::kProducedFileFormatVersion) {}
@@ -69,7 +68,6 @@ class TORCH_API Unpickler {
         read_record_(std::move(read_record)),
         // NOLINTNEXTLINE(performance-move-const-arg)
         device_(std::move(device)),
-        tensor_pool_(nullptr),
         use_storage_device_(use_storage_device),
         type_parser_(type_parser),
         storage_context_(std::move(storage_context)),
@@ -83,7 +81,7 @@ class TORCH_API Unpickler {
   // restoreAccurateTypeTags
   IValue parse_ivalue();
 
-  IValue parse_ivalue(const void* tensor_pool);
+  IValue parse_ivalue(const std::unordered_map<std::string, void*>& tensor_pool);
 
   // [type tag serialization]
   // This is used to determine whether to restore type tags be recursively
@@ -170,7 +168,7 @@ class TORCH_API Unpickler {
 
   std::function<at::DataPtr(const std::string&)> read_record_;
   c10::optional<at::Device> device_;
-  const void* tensor_pool_;
+  std::unordered_map<std::string, void*> tensor_pool_;
   // milliseconds int
   std::chrono::duration<double, std::micro> time_spent_in_read_record_{0};
   std::unordered_map<std::string, std::chrono::duration<double, std::micro>>

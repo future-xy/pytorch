@@ -197,7 +197,7 @@ IValue Unpickler::parse_ivalue() {
   return stack_[0];
 }
 
-IValue Unpickler::parse_ivalue(const void* tensor_pool) {
+IValue Unpickler::parse_ivalue(const std::unordered_map<std::string, void*>& tensor_pool) {
   tensor_pool_ = tensor_pool;
   return parse_ivalue();
 }
@@ -469,10 +469,15 @@ PickleOpCode Unpickler::readInstruction() {
       const std::string& key = args.at(2).toStringRef();
 
       at::Device device(args.at(3).toStringRef());
+      std::string device_str = device.str();
       if (device_) {
+        // std::cout << "device_ = " << device_->str() << std::endl;
         device = *device_;
+      } else {
+        // std::cout << "device_ = nullptr" << std::endl;
       }
 
+      bool data_moved = false;
       at::Storage storage;
       if (storage_context_ != nullptr && storage_context_->hasStorage(key)) {
         // for torch.package logic where storage may be loaded already
@@ -483,15 +488,18 @@ PickleOpCode Unpickler::readInstruction() {
 
         at::DataPtr storage_ptr;
         if (numel > 0) {
-          if (tensor_pool_ != nullptr) {
+          if (tensor_pool_.find(device_str) != tensor_pool_.end()) {
+            // std::cout << "tensor_pool_[" << device_str << "] = " << tensor_pool_[device_str] << std::endl;
+            void * tensor_address = tensor_pool_[device_str];
             auto offset_dptr = read_record_(key);
             uint64_t* offset_ptr = static_cast<uint64_t*>(offset_dptr.get());
             uint64_t offset = *offset_ptr;
             // std::cout << "offset_ptr: " << std::hex << offset_ptr << " offset: " << std::dec << offset << std::endl;
             // make a DataPtr from the tensor pool, data is in tensor_pool_ + offset
             storage_ptr = at::DataPtr(
-                (void*) tensor_pool_ + offset,
-                device_.value());
+                (void*) tensor_address + offset,
+                device);
+            data_moved = true;
             // print address in 0x format
             // std::cout << "deserializing tensor " << key
             //           << " from tensor pool 0x" << std::hex
@@ -528,7 +536,7 @@ PickleOpCode Unpickler::readInstruction() {
       }
 
       auto options = at::CPU(type).options();
-      if (tensor_pool_ != nullptr) {
+      if (data_moved) {
         options = at::CUDA(type).options();
       }
       if (use_storage_device_) {

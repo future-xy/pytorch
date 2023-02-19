@@ -31,7 +31,7 @@ TORCH_API IValue readArchiveAndTensorRef(
     c10::optional<TypeResolver> type_resolver,
     c10::optional<ObjLoader> obj_loader,
     c10::optional<at::Device> device,
-    const void* tensor_pool,
+    const std::unordered_map<std::string, void*>&  tensor_pool,
     caffe2::serialize::PyTorchStreamReader& stream_reader,
     c10::TypePtr (*type_parser)(const std::string&) =
         Unpickler::defaultTypeParser,
