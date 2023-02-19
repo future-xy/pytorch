@@ -139,9 +139,9 @@ SourceImporterImpl::SourceImporterImpl(
       }
       imported_meta_structure_.insert(line);
     }
-    for (const auto& meta_module : imported_meta_structure_) {
-      std::cout << "Imported meta module: " << meta_module << std::endl;
-    }
+    // for (const auto& meta_module : imported_meta_structure_) {
+    //   std::cout << "Imported meta module: " << meta_module << std::endl;
+    // }
   }
 }
 

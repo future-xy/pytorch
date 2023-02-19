@@ -127,11 +127,11 @@ void Pickler::pushIValueImpl(const IValue& ivalue) {
       }
       if (memoized_objects_set_.find(self_name) != memoized_objects_set_.end()) {
         memoized_objects_map_[type_name.qualifiedName()] = demangled_name;
-        std::cout << std::string(object_depth_, '\t') << original_name << " -> " << demangled_name << std::endl;
+        // std::cout << std::string(object_depth_, '\t') << original_name << " -> " << demangled_name << std::endl;
       } else {
         memoized_objects_map_[type_name.qualifiedName()] = original_name;
         memoized_objects_set_.insert(self_name);
-        std::cout << std::string(object_depth_, '\t') << original_name << " -> " << original_name << " (new)" << std::endl;
+        // std::cout << std::string(object_depth_, '\t') << original_name << " -> " << original_name << " (new)" << std::endl;
       }
       push<PickleOpCode>(PickleOpCode::SETITEMS);
     }

@@ -525,8 +525,8 @@ size_t AlignedBuffer::writeData(const void* data, size_t size) {
       written += direct_write_size;
       file_offset_ += direct_write_size;
       free(direct_write_buf);
-      std::cout << "direct write size: " << direct_write_size << " written: "
-                << written << " size: " << size << " file_offset_: " << file_offset_ << std::endl;
+      // std::cout << "direct write size: " << direct_write_size << " written: "
+      //           << written << " size: " << size << " file_offset_: " << file_offset_ << std::endl;
     }
     size_t to_write = std::min(size - written, buf_size_ - buf_pos_);
     memcpy(static_cast<char*>(buffer_) + buf_pos_, data + written, to_write);
@@ -538,7 +538,7 @@ size_t AlignedBuffer::writeData(const void* data, size_t size) {
       buf_pos_ = 0;
       file_offset_ += buf_size_;
     }
-    std::cout << "to_write: " << to_write << " written: " << written << " size: " << size << " buf_pos_: " << buf_pos_ << " file_offset_: " << file_offset_ << std::endl;
+    // std::cout << "to_write: " << to_write << " written: " << written << " size: " << size << " buf_pos_: " << buf_pos_ << " file_offset_: " << file_offset_ << std::endl;
   }
   return written;
 }
@@ -573,7 +573,7 @@ uint64_t TensorWriter::writeRecord(const char* data, size_t size) {
     written += buffer_.writePadding(padding);
   }
   offset_ += written;
-  std::cout << "writeRecord: " << size << " " << padding << " " << written << " " << offset_ << std::endl;
+  // std::cout << "writeRecord: " << size << " " << padding << " " << written << " " << offset_ << std::endl;
   return start_offset;
 }
 
