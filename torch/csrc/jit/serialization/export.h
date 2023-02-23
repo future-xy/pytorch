@@ -94,7 +94,8 @@ class TORCH_API TensorWriter final {
   uint64_t writeRecord(const char* data, size_t size, std::string device);
 
  private:
-  size_t offset_;
+//   size_t offset_;
+  std::unordered_map<std::string, size_t> device_offsets_;
 //   AlignedBuffer buffer_;
   std::string filename_;
   std::unordered_map<std::string, std::unique_ptr<AlignedBuffer>> device_buffers_;

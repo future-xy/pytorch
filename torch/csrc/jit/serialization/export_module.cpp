@@ -558,7 +558,7 @@ size_t AlignedBuffer::writePadding(size_t padding_size) {
 #define BUFFER_SIZE 1<<20
 
 TensorWriter::TensorWriter(const std::string& filename)
-    : offset_(0), filename_(filename) {
+    : filename_(filename) {
 }
 
 TensorWriter::~TensorWriter() {
@@ -567,8 +567,10 @@ TensorWriter::~TensorWriter() {
 uint64_t TensorWriter::writeRecord(const char* data, size_t size, std::string device) {
   if (device_buffers_.find(device) == device_buffers_.end()) {
     device_buffers_[device] = std::make_unique<AlignedBuffer>(filename_ + "_" + device, BUFFER_SIZE);
+    device_offsets_[device] = 0;
   }
   auto& buffer_ = *device_buffers_[device];
+  auto& offset_ = device_offsets_[device];
   // CAFFE_ENFORCE(ofs_ >= 0, "TensorWriter is closed");
   uint64_t start_offset = offset_;
   // make sure the data is 64-bit aligned
@@ -673,12 +675,20 @@ void ScriptModuleSerializer::serializeConvertedModule(
 
     // writeByteCode(module, save_mobile_debug_info);
   } else {
-    writeArchiveAndExportTensor(
+    /*
+      constants can't be loaded in parallel with graph construction
+    */
+    // writeArchiveAndExportTensor(
+    //     c10::ivalue::Tuple::create(ivalue_constants),
+    //     /*archive_name=*/"constants",
+    //     /*archive_dir=*/"",
+    //     /*tensor_dir=*/"constants/"
+    //     );
+        writeArchive(
         c10::ivalue::Tuple::create(ivalue_constants),
         /*archive_name=*/"constants",
         /*archive_dir=*/"",
-        /*tensor_dir=*/"constants/"
-        );
+        /*tensor_dir=*/"constants/");
   }
   // Acquires and sets minimum (dynamic) version
   for (auto& item : file_streams_) {
@@ -833,7 +843,6 @@ void ScriptModuleSerializer::writeArchiveAndExportTensor(
     std::string device = td.device().str();
     std::replace(device.begin(), device.end(), ':', '_');
     uint64_t offset = p_tensor_writer_->writeRecord(writable_td.data(), writable_td.sizeInBytes(), device);
-    // std::cout << "Serializing " << tensor_name << " at offset " << offset << std::endl;
     writer_.writeRecord(
         tensor_dir + tensor_name,
         &offset,

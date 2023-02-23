@@ -383,7 +383,11 @@ Module ScriptModuleDeserializer::fastDeserialize(
 #endif
   }
   // dlog("Loading constants from archive.");
-  auto tuple = readArchiveFast("constants", tensor_pool).toTuple();
+  /*
+    constants must be loaded before building the module
+  */
+  // auto tuple = readArchiveFast("constants", tensor_pool).toTuple();
+  auto tuple = readArchive("constants").toTuple();
   // dlog(
   //     "Constant size=" +
   //     c10::to_string(tuple->elements().size()));

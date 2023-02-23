@@ -280,6 +280,7 @@ static std::vector<T> convertList(const IValue& v) {
 
 PickleOpCode Unpickler::readInstruction() {
   auto opcode = readOpCode();
+  // std::cout << "opcode: " << int(static_cast<uint8_t>(opcode)) << std::endl;
   switch (opcode) {
     case PickleOpCode::EMPTY_LIST: {
       stack_.emplace_back(c10::impl::GenericList(AnyType::get()));
@@ -500,13 +501,14 @@ PickleOpCode Unpickler::readInstruction() {
                 (void*) tensor_address + offset,
                 device);
             data_moved = true;
-            // print address in 0x format
+            // std::cout << "storage on device " << device << std::endl;
+            // // print address in 0x format
             // std::cout << "deserializing tensor " << key
             //           << " from tensor pool 0x" << std::hex
-            //           << (uint64_t)tensor_pool_ << " at address 0x" << std::hex
-            //           << (uint64_t)storage_ptr.get() << " offset "
-            //           << offset << std::endl;
+            //           << (uint64_t)tensor_address << std::dec << " offset "
+            //           << offset << " on device " << device << std::endl;
           } else {
+            // std::cout << "storage on host" << std::endl;
             // If there are no elements in the tensor, there's no point in
             // reading a zero (0) byte file from the input stream and paying
             // that cost.
@@ -537,7 +539,7 @@ PickleOpCode Unpickler::readInstruction() {
 
       auto options = at::CPU(type).options();
       if (data_moved) {
-        options = at::CUDA(type).options();
+        options = at::CUDA(type).options(device);
       }
       if (use_storage_device_) {
         options = options.device(storage.device());
