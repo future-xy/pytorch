@@ -166,9 +166,17 @@ class TORCH_API Pickler {
     map = memoized_objects_map_;
   }
 
-  // get memoized_objects_set_
-  void getMemoizedObjectsSet(std::unordered_set<std::string>& set) {
-    set = memoized_objects_set_;
+  // // get memoized_objects_set_
+  // void getMemoizedObjectsSet(std::unordered_set<std::string>& set) {
+  //   set = memoized_objects_set_;
+  // }
+
+  // get meta_objects
+  void getMetaObjects(std::vector<std::string>& meta_objects) {
+    // meta objects are values of meta_objects_map_
+    for (auto& kv : meta_objects_map_) {
+      meta_objects.push_back(kv.second);
+    }
   }
 
  private:
@@ -291,7 +299,9 @@ class TORCH_API Pickler {
   // <original_name, cached_name>
   std::unordered_map<std::string, std::string> memoized_objects_map_;
   // object cache for memoization
-  std::unordered_set<std::string> memoized_objects_set_;
+  // std::unordered_set<std::string> memoized_objects_set_;
+  // <self_name, original_name>
+  std::unordered_map<std::string, std::string> meta_objects_map_;
 };
 
 // returns a (tensor, record_size) for a tensor, converting it to a CPU tensor

@@ -856,8 +856,8 @@ void ScriptModuleSerializer::writeArchiveAndExportTensor(
   for (const c10::ClassTypePtr& wroteType : memoizedClassTypes) {
     convertNamedType(wroteType);
   }
-  std::unordered_set<std::string> meta_objects;
-  data_pickle.getMemoizedObjectsSet(meta_objects);
+  std::vector<std::string> meta_objects;
+  data_pickle.getMetaObjects(meta_objects);
   for (const auto& obj : meta_objects) {
     p_meta_writer_->writeRecord(obj);
   }

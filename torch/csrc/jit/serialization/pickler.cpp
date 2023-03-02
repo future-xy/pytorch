@@ -122,21 +122,29 @@ void Pickler::pushIValueImpl(const IValue& ivalue) {
       push<PickleOpCode>(PickleOpCode::MARK);
       std::string self_name = demangled_name;
       for (size_t i = 0, n = type->numAttributes(); i < n; ++i) {
-        // // if it is not object, print name and type
-        // if (!obj->getSlot(i).isObject()) {
-        //   std::cout << std::string(object_depth_ + 1, '\t')
-        //             << type->getAttributeName(i) << " : "
-        //             << obj->getSlot(i).tagKind() << std::endl;
-        // }
+        // if it is not object, print name and type
+        if (!obj->getSlot(i).isObject()) {
+          std::cout << std::string(object_depth_ + 1, '\t')
+                    << type->getAttributeName(i) << " : "
+                    << obj->getSlot(i).type()->str() << std::endl;
+          self_name += type->getAttributeName(i) + ':'+ obj->getSlot(i).type()->str();
+        }
         pushString(type->getAttributeName(i));
         pushIValue(obj->getSlot(i));
+        if (obj->getSlot(i).isObject()) {
+          // if it is object, print name
+          std::cout << std::string(object_depth_ + 1, '\t')
+                    << type->getAttributeName(i) << " : "
+                    << obj->getSlot(i).toObject()->type()->name().value().qualifiedName() << std::endl;
+          self_name += memoized_objects_map_[obj->getSlot(i).toObject()->type()->name().value().qualifiedName()];
+        }
       }
-      if (memoized_objects_set_.find(self_name) != memoized_objects_set_.end()) {
+      if (meta_objects_map_.find(self_name) != meta_objects_map_.end()) {
         memoized_objects_map_[type_name.qualifiedName()] = demangled_name;
         // std::cout << std::string(object_depth_, '\t') << original_name << " -> " << demangled_name << std::endl;
       } else {
         memoized_objects_map_[type_name.qualifiedName()] = original_name;
-        memoized_objects_set_.insert(self_name);
+        meta_objects_map_[self_name] = original_name;
         // std::cout << std::string(object_depth_, '\t') << original_name << " -> " << original_name << " (new)" << std::endl;
       }
       push<PickleOpCode>(PickleOpCode::SETITEMS);
